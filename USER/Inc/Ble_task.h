@@ -1,0 +1,72 @@
+//
+// Created by JiangyaF on 2026/10/22.
+//
+// 蓝牙任务（FreeRTOS）—— 骨架版
+//
+// 职责：
+//   1. 持续监视蓝牙连接状态（STATE 引脚），连接/断开时打印提示
+//   2. 更新 LED2 指示连接状态（未连接慢闪 / 已连接常亮）
+//   3. 留出接收处理的位置，由你填写具体业务逻辑
+//
+// 硬件：HC-05 模块，接在 USART2 上（PA2/PA3），默认波特率 9600。
+//
+// ⚠️ 打印与数据共用同一个串口：
+//    本任务的调试输出和手机收发的数据都走 USART2，两者会混在一起。
+//    实车调试时如果觉得刷屏，可以把 BleTask_Print 的输出关掉。
+//
+// 任务参数：
+//    优先级   : 2（低于控制任务 3，高于空闲）
+//    栈       : 320 字 = 1280 字节
+//    周期     : 100ms
+//
+// 可用的驱动接口（详见 Ble.h）：
+//    发送：BLE_Send / BLE_SendString / BLE_SendByte
+//    接收：BLE_GetByte / BLE_GetLine
+//    状态：BLE_IsConnected
+//
+
+#ifndef LINEFOLLOWING_CAR_BLE_TASK_H
+#define LINEFOLLOWING_CAR_BLE_TASK_H
+
+#include "main.h"
+#include "FreeRTOS.h"
+#include "task.h"
+
+/* ------------------------------------------------------------------------- */
+/* 任务参数                                                                    */
+/* ------------------------------------------------------------------------- */
+
+/* 任务优先级。0 最低（空闲），configMAX_PRIORITIES-1 最高 */
+#define BLE_TASK_PRIORITY           2U
+
+/*
+ * 任务栈深度，单位【字】（Word，不是字节）。320 字 = 1280 字节。
+ *
+ * 依据实测（-fstack-usage 逐函数栈帧）：
+ *   BleTask_Main(88) + BleTask_Print(208) + vsnprintf(100)
+ *   + HAL_UART_Transmit(48) = 444 B，加上 FreeRTOS 上下文帧与中断余量
+ *   => 峰值约 600 B。1280 B 预算约有 2 倍余量。
+ *
+ * ⚠️ 本工程 configCHECK_FOR_STACK_OVERFLOW = 0，栈溢出是静默的，
+ *    所以宁可留余量，不要压到刚好够用。
+ */
+#define BLE_TASK_STACK_WORDS        320U
+
+/* 任务主循环周期，单位 ms */
+#define BLE_TASK_PERIOD_MS          100U
+
+/* ------------------------------------------------------------------------- */
+/* 接口                                                                        */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * 创建蓝牙任务。
+ * 请在调度器启动（vTaskStartScheduler）之前、且 BLE_Init() 之后调用。
+ *
+ * 返回值：
+ *   1 = 创建成功
+ *   0 = 创建失败（通常是堆不够，xTaskCreate 返回 errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY）
+ */
+uint8_t BleTask_Init(void);
+
+#endif //LINEFOLLOWING_CAR_BLE_TASK_H

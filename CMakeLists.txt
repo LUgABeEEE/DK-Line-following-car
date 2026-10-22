@@ -51,6 +51,10 @@ add_executable(${CMAKE_PROJECT_NAME}
         Drivers/BSD/Inc/Ble.h
         Drivers/BSD/Src/Oled.c
         Drivers/BSD/Inc/Oled.h
+        USER/Src/Ble_task.c
+        USER/Src/Control_task.c
+        USER/Inc/Ble_task.h
+        USER/Inc/Control_task.h
 
 
 )
@@ -68,6 +72,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
         Drivers/BSD/Src/Ble.c
         Drivers/BSD/Src/Oled.c
+        # 用户任务层（FreeRTOS 任务）
+        USER/Src/Ble_task.c
+        USER/Src/Control_task.c
         #Freertos kernel sources
         FreeRTOS/Src/croutine.c
         FreeRTOS/Src/event_groups.c
@@ -84,6 +91,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
         Drivers/BSD/Inc
+        USER/Inc
         # --- FreeRTOS kernel headers ---
         FreeRTOS/Inc
         # FreeRTOSConfig.h is in Core/Inc (already provided via stm32cubemx)

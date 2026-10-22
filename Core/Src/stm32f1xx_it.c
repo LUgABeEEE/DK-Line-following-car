@@ -151,6 +151,15 @@ void SVC_Handler(void)
   /* USER CODE END SVCall_IRQn 0 */
   /* USER CODE BEGIN SVCall_IRQn 1 */
 
+  /*
+   * 这里不需要做任何事。
+   * 本工程的 startup_stm32f103xb.s 已经把向量表直接指向 FreeRTOS 的
+   * vPortSVCHandler / xPortPendSVHandler / xPortSysTickHandler，
+   * 所以本文件里的这三个空函数不在中断路径上。
+   * 之所以保留它们：CubeMX 会生成，且万一有人把启动文件的向量改回
+   * 标准名字，也不会因为缺少定义而链接失败。
+   */
+
   /* USER CODE END SVCall_IRQn 1 */
 }
 
@@ -177,6 +186,8 @@ void PendSV_Handler(void)
   /* USER CODE END PendSV_IRQn 0 */
   /* USER CODE BEGIN PendSV_IRQn 1 */
 
+  /* 同 SVC_Handler：向量表已直接指向 xPortPendSVHandler，此函数不被调用 */
+
   /* USER CODE END PendSV_IRQn 1 */
 }
 
@@ -190,6 +201,14 @@ void SysTick_Handler(void)
   /* USER CODE END SysTick_IRQn 0 */
 
   /* USER CODE BEGIN SysTick_IRQn 1 */
+
+  /*
+   * 同 SVC_Handler：向量表已直接指向 xPortSysTickHandler，此函数不被调用。
+   *
+   * 注意：HAL 的时基不是 SysTick，而是 TIM2
+   * （见 stm32f1xx_hal_timebase_tim.c），所以 uwTick 由 TIM2 中断推进，
+   * HAL_GetTick() 在 RTOS 下依然正常工作。
+   */
 
   /* USER CODE END SysTick_IRQn 1 */
 }

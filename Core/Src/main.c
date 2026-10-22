@@ -30,6 +30,9 @@
 #include "Key.h"
 #include "Ble.h"
 #include "Oled.h"
+#include "Ble_task.h"
+#include "Control_task.h"
+#include <string.h>     /* strlen：蓝牙换速提示信息用 */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -135,7 +138,7 @@ int main(void)
   LinePD_Init(&g_line_pd); /* 外环循迹 PD，参数用 LinePD.h 里的默认值 */
   Led_Init();              /* 两盏 LED 全灭，清空闪烁状态 */
   Key_Init();              /* 三个按键采信当前电平作为初始稳定态 */
-  BLE_Init();              /* 拉高 BLE_EN，启动 USART2 字节中断接收 */
+  BLE_Init();              /* KEY 拉低=透传模式，启动 USART2 字节中断接收 */
 
   /*
    * OLED 初始化。返回 0 表示屏没有应答（I2C 不通）。
@@ -149,19 +152,24 @@ int main(void)
   }
 
   /*
-   * ⚠️ 蓝牙首次使用：模块出厂波特率是 9600，而本工程 USART2 配的是 115200。
-   *    两者不匹配时 AT 指令完全没有响应（或收到乱码）。
-   *    把下面两行的注释去掉跑一次，它会把模块改成 115200 并复位生效：
+   * ============ 蓝牙（HC-05）初始化 ============
    *
-   *      BLE_SetBaud(BLE_BAUD_115200);   // 此时还必须是 9600 才能通
-   *      BLE_Reset();
+   * HC-05 上电默认就是【透传模式】，不需要任何 AT 指令：
+   *   - 手机/电脑连上 "HC-05"（配对码 1234 或 0000）
+   *   - 双方直接收发数据，串口透传
    *
-   *    前提：先把 CubeMX 里 USART2 的波特率临时改成 9600 并重新生成代码，
-   *    否则连 9600 的 AT 指令都发不出去。改完再改回 115200。
-   *    详细步骤见文件末尾的说明。
+   * 所以这里不需要做任何配置。BLE_Init() 已在上方把 KEY 拉低并启动接收。
+   *
+   * 需要改模块配置时（名称/波特率/配对码），流程是：
+   *   1. 调用 BLE_EnterATMode()（KEY 拉高）
+   *   2. 给模块断电再上电
+   *   3. 调用 BLE_Verify() 或 BLE_SetName()/BLE_SetBaud() 等
+   *   4. 调用 BLE_ExitATMode()（KEY 拉低）+ 断电重启
    */
-  // BLE_SetBaud(BLE_BAUD_115200);
-  // BLE_Reset();
+  {
+    const char *msg = "\r\n[BLE] HC-05 ready (transparent mode, 9600 8N1)\r\n";
+    HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)strlen(msg), 100U);
+  }
 
   /* 首次调试时把下面其中一行的注释去掉，跑一遍对应自检。
      确认硬件受控之后，务必重新注释掉，否则会影响后面的循迹逻辑。 */
@@ -177,70 +185,48 @@ int main(void)
 
   /* 上车跑圈之前必须先跑这一行，把三个符号钉死（电机默认不动，安全） */
   // LinePD_VerifySigns(&g_line_pd, &g_gray, &hi2c1, 0);
+
+  /* ================= FreeRTOS：创建任务并启动调度器 ================= */
+
+  /*
+   * 创建蓝牙任务。必须在 vTaskStartScheduler() 之前完成。
+   * BleTask_Init() 返回 0 表示堆不够（xTaskCreate 失败）——这种情况任务不会
+   * 运行，而且不会有任何报错，所以这里要显式检查。
+   */
+  if (BleTask_Init() == 0U)
+  {
+    /* 堆不够。把 configTOTAL_HEAP_SIZE 调大，或减小 BLE_TASK_STACK_WORDS */
+    Error_Handler();
+  }
+
+  /*
+   * 创建实时控制任务（优先级 3，高于蓝牙任务）。
+   * 它接管原来 while(1) 里的内环/外环/UI 三个节拍。
+   * 当前 CTRL_TASK_ENABLE_MOTION = 0，电机保持停止，只验证蓝牙。
+   */
+  if (ControlTask_Init() == 0U)
+  {
+    Error_Handler();
+  }
+
+  /*
+   * 启动调度器。正常情况下这个函数**永不返回**。
+   *
+   * 只有当空闲任务或定时器任务都分配不出来（堆彻底不够）时才会返回，
+   * 那时说明配置有严重问题，直接进 Error_Handler。
+   *
+   * 原来的裸机主循环（内环 20ms / 外环 100ms / UI 20ms）已经整体搬进
+   * ControlTask_Main()，这里不再保留任何业务代码。
+   */
+  vTaskStartScheduler();
+
+  Error_Handler();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    static uint32_t last_inner_tick = 0U;
-    static uint32_t last_outer_tick = 0U;
-    static uint32_t last_ui_tick = 0U;
-
-    /* ================= 内环：速度环，20ms =================
-       必须严格按 SPEED_PID_PERIOD_MS 周期执行，因为 PID 的积分和微分
-       都以这个固定步长计算。 */
-    if ((HAL_GetTick() - last_inner_tick) >= SPEED_PID_PERIOD_MS)
-    {
-      last_inner_tick = HAL_GetTick();
-
-      /* 顺序不能反：先刷新编码器速度，再让 PID 用它做反馈 */
-      Encoder_UpdateSpeed();
-
-      /* 目标速度由外环在下面设定。外环没跑的时候这里会把轮子维持在
-         它最后一次给出的目标速度上，所以外环周期里内环能稳定跟踪。 */
-    }
-
-    /* ================= 外环：循迹 PD，100ms =================
-       周期为内环的 5 倍，符合"外环比内环慢 3~5 倍"的要求。 */
-    if ((HAL_GetTick() - last_outer_tick) >= LINE_PD_PERIOD_MS)
-    {
-      last_outer_tick = HAL_GetTick();
-
-      /* 读灰度 -> PD 运算 -> 把左右轮目标速度写进内环（内部会立即执行一次速度环） */
-      (void)LinePD_Update(&g_line_pd, &g_gray, &hi2c1);
-
-      /*
-       * OLED 状态面板，与外环同频（100ms = 10Hz）。
-       *
-       * ⚠️ 时间开销：I2C2 当前是 100kHz，整屏刷新要发 8 页 x 129 字节
-       *    ≈ 1032 字节，约需 19ms（含每页 3 条命令事务）。
-       *    这已经占了外环周期的 19%，会让循迹控制的节奏变差。
-       *
-       *    所以这里默认**注释掉**。等你把 CubeMX 里 I2C2 的 ClockSpeed
-       *    从 100000 改成 400000 之后，刷新时间会降到约 5ms，那时再打开。
-       *
-       *    如果暂时不想改 I2C 速度，也可以把 OLED 显示放到内环里每 200ms
-       *    刷新一次（用独立的时间戳），牺牲显示流畅度换取控制实时性。
-       */
-      // OLED_ShowDashboard(&g_line_pd);
-    }
-
-    /* 调试阶段想让它跑起来，把上面那句的返回值打印出来看即可：
-       LinePD_Update() 返回 LINE_PD_OK / ERR_I2C / ERR_LOST / ERR_PERIOD */
-
-    /* ================= 人机界面：LED 闪烁 + 按键扫描，20ms =================
-       两者都要求周期性调用：Led_Refresh() 推进闪烁计时，
-       Key_Scan() 跑消抖状态机。都不阻塞，多跑几次也没有副作用。 */
-    if ((HAL_GetTick() - last_ui_tick) >= KEY_SCAN_PERIOD_MS)
-    {
-      last_ui_tick = HAL_GetTick();
-
-      Led_Refresh();
-      Key_Scan();
-      BLE_UpdateLed();       /* 蓝牙状态变化时更新 LED2（未连接慢闪 / 已连接常亮） */
-    }
-
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -593,7 +579,12 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  /*
+   * HC-05 默认通信波特率是 9600（不是 JDY-31 的 9600 那种"可配置档位"，
+   * 而是模块出厂就固定 9600）。
+   * 如果以后用 AT+UART 改了模块波特率，这里也要同步改。
+   */
+  huart2.Init.BaudRate = 9600;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -663,11 +654,11 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOA, BLE_STATE_Pin|M_STBY_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, BUZZ_Pin|LED2_Pin|LED1_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOB, BUZZ_Pin|M_AIN2_Pin|M_AIN1_Pin|M_BIN1_Pin
+                          |M_BIN2_Pin|BLE_EN_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, M_AIN2_Pin|M_AIN1_Pin|M_BIN1_Pin|M_BIN2_Pin
-                          |BLE_EN_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, LED2_Pin|LED1_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pins : BLE_STATE_Pin M_STBY_Pin */
   GPIO_InitStruct.Pin = BLE_STATE_Pin|M_STBY_Pin;

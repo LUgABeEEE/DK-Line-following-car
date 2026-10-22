@@ -286,8 +286,26 @@
 /* Sets the total size of the FreeRTOS heap, in bytes, when heap_1.c, heap_2.c
  * or heap_4.c are included in the build.  This value is defaulted to 4096 bytes
  * but it must be tailored to each application.  Note the heap will appear in
- * the .bss section.  See https://www.freertos.org/a00111.html. */
-#define configTOTAL_HEAP_SIZE                        8192
+ * the .bss section.  See https://www.freertos.org/a00111.html.
+ *
+ * 本项目设为 10240 字节（10KB）。
+ *
+ * 当前用量（两个任务都由 xTaskCreate 动态创建，所以都从这个堆里拿）：
+ *   - 蓝牙任务 BleTask : 栈 320 字 = 1280B + TCB ~88B + 块头/对齐 ~12B = 1380B
+ *   - 控制任务 CtrlTask: 栈 320 字 = 1280B + TCB ~88B + 块头/对齐 ~12B = 1380B
+ *   - heap_4 块头开销（每块 8B）与 8 字节对齐                    ~30B
+ *   ------------------------------------------------------------------
+ *   合计约 2.8KB，10KB 下剩余约 7.4KB。
+ *
+ * 注意：空闲任务和定时器任务的栈/TCB 是**静态分配**的
+ *      （configSUPPORT_STATIC_ALLOCATION=1，由 tasks.c / timers.c 的默认回调
+ *      返回 uxIdleTaskStack / uxTimerTaskStack 两个 .bss 数组），
+ *      不占这个堆，所以不必为它们预留空间。
+ *
+ * 剩余的约 7.4KB 留给后续功能：控制任务与蓝牙任务之间的队列、按键事件信号量、
+ * 软件定时器、以及将来可能新增的任务。实际水位看 BleTask 周期打印的 heap min。
+ */
+#define configTOTAL_HEAP_SIZE                        10240
 
 /* Set configAPPLICATION_ALLOCATED_HEAP to 1 to have the application allocate
  * the array used as the FreeRTOS heap.  Set to 0 to have the linker allocate
