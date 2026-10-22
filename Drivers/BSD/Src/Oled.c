@@ -21,19 +21,59 @@
 
 #include "Oled.h"
 #include "OledFont.h"
-#include "Encoder.h"
-#include "SpeedPID.h"
-#include "LinePD.h"
-#include "Gray.h"
-#include "Ble.h"
-#include <stdio.h>
 #include <string.h>
 
 /* I2C 句柄定义在 main.c 中 */
 extern I2C_HandleTypeDef hi2c2;
 
-/* 灰度传感器实例，定义在 main.c 中。只读它的位置/丢线状态 */
-extern Gray_Sensor_t g_gray;
+/* ------------------------------------------------------------------------- */
+/* DMA 完成通知                                                                */
+/* ------------------------------------------------------------------------- */
+
+#if (OLED_ASYNC_MODE)
+/*
+ * 用 FreeRTOS 计数信号量做传输完成通知。
+ *
+ * 为什么用信号量而不是轮询 hi2c2.State：
+ *   轮询是忙等，CPU 白白空转。用信号量可以让任务进入阻塞态，
+ *   期间调度器把 CPU 让给控制任务和蓝牙任务，DMA 传完后再唤醒。
+ *   对 100kHz I2C 传 129 字节约 12ms，这段时间足够控制任务跑半圈。
+ *
+ * 用【计数】信号量而不是二值：万一回调比等待先发生（极端时序），
+ * 计数不会丢，下一次 Take 能立刻拿到。
+ */
+#include "semphr.h"
+/* 信号量只在启用信号量等待时才需要 */
+#if (OLED_USE_RTOS_SEM != 0U)
+static SemaphoreHandle_t s_dma_done_sem = NULL;
+#endif
+#endif /* OLED_ASYNC_MODE */
+
+/*
+ * DMA 诊断计数器（不管是否启用 DMA 都定义，便于统一读取）
+ *   s_async_ok      : 成功启动并等到完成的传输次数
+ *   s_async_timeout : 等待超时的次数（>0 说明中断/回调链有问题）
+ *   s_async_busy    : HAL 返回 BUSY 的次数（说明上一笔没等干净）
+ */
+static volatile uint32_t s_async_ok      = 0U;
+static volatile uint32_t s_async_timeout = 0U;
+static volatile uint32_t s_async_busy    = 0U;
+
+/*
+ * DMA 是否可用。
+ *
+ * ⚠️ 这是本驱动最重要的一个标志，原因是 FreeRTOS 的硬性约束：
+ *    调度器启动之前不能调用会阻塞的同步 API（xSemaphoreTake 等），
+ *    因为此时 pxCurrentTCB 还没建立，任务阻塞/唤醒机制无法工作，
+ *    调用会让整个系统卡死（表现为：OLED 停在旧画面、其它任务全不运行）。
+ *
+ * 而 OLED_Init() 恰恰是在 vTaskStartScheduler() 之前调用的。
+ * 所以：
+ *   - OLED_Init() 阶段：s_async_ready = 0 -> 走轮询，安全
+ *   - 调度器启动后，任务里调用 OLED_EnableAsync() -> s_async_ready = 1
+ *     -> 走 I2C 中断（OLED_USE_IT=1）或 DMA（OLED_USE_DMA=1）
+ */
+static volatile uint8_t s_async_ready = 0U;
 
 /* ------------------------------------------------------------------------- */
 /* 显存                                                                        */
@@ -69,22 +109,206 @@ static uint8_t OLED_Ty(uint8_t y)
 /* 底层 I2C                                                                    */
 /* ------------------------------------------------------------------------- */
 
-/* 发送若干【命令】字节 */
-static uint8_t OLED_WriteCmd(const uint8_t *cmds, uint16_t len)
-{
-    uint8_t buf[32];
+/*
+ * ⚠️ DMA 发送缓冲区必须放在【静态区】，不能放栈上。
+ *
+ * 原因：HAL_I2C_Master_Transmit_DMA() 是异步的，它只是把缓冲区地址
+ * 交给 DMA 控制器就立刻返回。如果缓冲区是函数内的局部数组，函数返回后
+ * 这块栈内存会被后续调用覆盖，DMA 就会把垃圾数据发到屏幕上
+ * （表现为花屏、随机点）。
+ *
+ * 静态缓冲区只多占 (32 + 129) = 161 字节 .bss，换来的确定性很值。
+ *
+ * 线程安全：本驱动只在 OledTask 一个任务里调用，且每次发送前都会
+ * 等待上一笔完成，所以单份缓冲区不会冲突。
+ */
+static uint8_t s_cmd_buf[32];               /* 命令缓冲（控制字节 + 最多 31 字节命令）*/
+static uint8_t s_data_buf[OLED_WIDTH + 1U]; /* 数据缓冲（控制字节 + 128 字节显存）  */
 
-    if ((cmds == NULL) || (len == 0U) || (len > (sizeof(buf) - 1U)))
+/*
+ * 等待 I2C 回到就绪状态（上一笔 DMA 传完）。
+ *
+ * 为什么必须等：HAL 的 I2C 同一时刻只能有一笔传输，DMA 还没结束时
+ * 再调 HAL_I2C_Master_Transmit_DMA() 会直接返回 HAL_BUSY，那一页数据
+ * 就被静默丢弃了——现象是屏幕有若干行不更新。
+ *
+ * 用 HAL_GetTick() 轮询而不是 vTaskDelay：保持驱动与 FreeRTOS 解耦，
+ * 这样同一份代码在裸机和 RTOS 下都能用。
+ * 在 RTOS 下这段是忙等，但正常情况只需等几毫秒（DMA 传完即返回）。
+ */
+#if (OLED_ASYNC_MODE)
+/*
+ * 等待一笔异步传输完成（I2C 中断或 DMA）。
+ * 返回 1 = 等到了完成信号；0 = 超时。
+ */
+static uint8_t OLED_WaitTxComplete(void)
+{
+    uint8_t got = 0U;
+
+#if (OLED_USE_RTOS_SEM != 0U)
+    if (s_dma_done_sem != NULL)
+    {
+        got = (xSemaphoreTake(s_dma_done_sem,
+                              pdMS_TO_TICKS(OLED_DMA_TIMEOUT_MS)) == pdTRUE) ? 1U : 0U;
+    }
+#else
+    {
+        uint32_t start = HAL_GetTick();
+
+        while (hi2c2.State != HAL_I2C_STATE_READY)
+        {
+            if ((HAL_GetTick() - start) >= OLED_DMA_TIMEOUT_MS)
+            {
+                break;
+            }
+        }
+        got = (hi2c2.State == HAL_I2C_STATE_READY) ? 1U : 0U;
+    }
+#endif
+
+    if (got == 0U)
+    {
+        s_async_timeout++;
+    }
+
+    return got;
+}
+#endif /* OLED_ASYNC_MODE */
+
+/*
+ * 统一的底层发送入口。
+ *
+ * 所有发送都经过这里，好处是 DMA/轮询的差异只在这一处，
+ * 上层（命令/数据/刷新）不需要关心用的是哪种方式。
+ */
+static uint8_t OLED_I2C_Send(const uint8_t *buf, uint16_t len)
+{
+    if ((buf == NULL) || (len == 0U))
     {
         return 0U;
     }
 
-    buf[0] = 0x00;      /* 控制字节：后面是命令 */
-    memcpy(&buf[1], cmds, len);
+#if (OLED_ASYNC_MODE)
+    /*
+     * 只有在调度器启动后才允许走异步传输（见 s_async_ready 的说明）。
+     * 初始化阶段走下面的轮询分支。
+     */
+    if (s_async_ready != 0U)
+    {
+        HAL_StatusTypeDef st;
 
-    return (HAL_I2C_Master_Transmit(&hi2c2, (uint16_t)(OLED_I2C_ADDR_7BIT << 1),
-                                    buf, (uint16_t)(len + 1U),
+        /*
+         * 只有上一笔还没结束时才需要等。
+         *
+         * 不能无条件等待：第一次异步发送时并没有"上一笔"，
+         * 无条件等会白等 50ms 超时，还让 timeout 计数凭空 +1，
+         * 干扰诊断（看上去像有问题，其实没有）。
+         */
+        if (hi2c2.State != HAL_I2C_STATE_READY)
+        {
+            (void)OLED_WaitTxComplete();
+        }
+
+#if (OLED_USE_DMA != 0U)
+        /* DMA 方式：硬件搬运数据，CPU 完全不参与 */
+        st = HAL_I2C_Master_Transmit_DMA(&hi2c2,
+                                         (uint16_t)(OLED_I2C_ADDR_7BIT << 1),
+                                         (uint8_t *)buf,
+                                         len);
+#else
+        /*
+         * 中断方式：CPU 在 I2C 中断里逐字节搬运。
+         *
+         * 用中断的好处（相比轮询）：发起后立即返回，任务进入阻塞态，
+         * 发送期间的 CPU 时间让给控制任务和蓝牙任务。
+         *
+         * 前提：I2C2_EV_IRQn 必须在 NVIC 里使能且优先级数值 >= 5。
+         *      CubeMX 里对应 "I2C2 event interrupt"。
+         */
+        st = HAL_I2C_Master_Transmit_IT(&hi2c2,
+                                        (uint16_t)(OLED_I2C_ADDR_7BIT << 1),
+                                        (uint8_t *)buf,
+                                        len);
+#endif
+
+        if (st == HAL_BUSY)
+        {
+            s_async_busy++;
+            return 0U;
+        }
+
+        if (st != HAL_OK)
+        {
+            return 0U;      /* 启动失败 */
+        }
+
+        /*
+         * 必须等这一笔真的传完才返回。
+         * 因为缓冲区是静态复用的，不等就返回的话下一次调用会覆写
+         * s_data_buf，而传输还没结束。
+         */
+        if (OLED_WaitTxComplete() != 0U)
+        {
+            s_async_ok++;
+            return 1U;
+        }
+
+        return 0U;          /* 超时 */
+    }
+#endif
+
+    /* 轮询发送：初始化阶段、或异步模式全部关闭时走这里 */
+    return (HAL_I2C_Master_Transmit(&hi2c2,
+                                    (uint16_t)(OLED_I2C_ADDR_7BIT << 1),
+                                    (uint8_t *)buf, len,
                                     OLED_I2C_TIMEOUT_MS) == HAL_OK) ? 1U : 0U;
+}
+
+/*
+ * I2C 主机发送完成回调（由 HAL 在 STOP 之后调用）。
+ *
+ * 注意：HAL 在调用本回调之前已经把 hi2c->State 置为 READY，
+ * 所以这里是"真正传完"的时刻，可以安全地开始下一笔。
+ */
+/*
+ * 由 main.c 的 HAL_I2C_MasterTxCpltCallback() 调用。
+ *
+ * 为什么不在这里直接定义 HAL 回调：
+ *   当 USE_HAL_I2C_REGISTER_CALLBACKS=0 时，HAL 库内部有一个 __weak 的
+ *   HAL_I2C_MasterTxCpltCallback。链接器解析 HAL 自己的调用时，会先用
+ *   库里的弱符号满足，导致写在 Oled.c 里的强定义被 --gc-sections 丢弃。
+ *   而 main.c 的 .o 是强制参与链接的，在它里面定义强符号才能真正覆盖。
+ *
+ *   ⚠️ 不要试图改 USE_HAL_I2C_REGISTER_CALLBACKS：那个宏在
+ *      stm32f1xx_hal_conf.h 里，CubeMX 重新生成代码时会把它改回 0。
+ *
+ * 本函数在中断上下文运行，只做 xSemaphoreGiveFromISR。
+ */
+void OLED_NotifyTxComplete(void)
+{
+#if (OLED_ASYNC_MODE) && (OLED_USE_RTOS_SEM != 0U)
+    BaseType_t higher_priority_task_woken = pdFALSE;
+
+    if (s_dma_done_sem != NULL)
+    {
+        (void)xSemaphoreGiveFromISR(s_dma_done_sem, &higher_priority_task_woken);
+        portYIELD_FROM_ISR(higher_priority_task_woken);
+    }
+#endif
+}
+
+/* 发送若干【命令】字节 */
+static uint8_t OLED_WriteCmd(const uint8_t *cmds, uint16_t len)
+{
+    if ((cmds == NULL) || (len == 0U) || (len > (sizeof(s_cmd_buf) - 1U)))
+    {
+        return 0U;
+    }
+
+    s_cmd_buf[0] = 0x00;      /* 控制字节：后面是命令 */
+    memcpy(&s_cmd_buf[1], cmds, len);
+
+    return OLED_I2C_Send(s_cmd_buf, (uint16_t)(len + 1U));
 }
 
 /* 发送单条【命令】 */
@@ -96,12 +320,12 @@ static uint8_t OLED_Cmd1(uint8_t cmd)
 /* 发送两字节命令（SSD1306 里很多命令需要一个参数） */
 static uint8_t OLED_Cmd2(uint8_t cmd, uint8_t arg)
 {
-    uint8_t buf[2];
+    uint8_t tmp[2];
 
-    buf[0] = cmd;
-    buf[1] = arg;
+    tmp[0] = cmd;
+    tmp[1] = arg;
 
-    return OLED_WriteCmd(buf, 2U);
+    return OLED_WriteCmd(tmp, 2U);
 }
 
 /*
@@ -110,19 +334,15 @@ static uint8_t OLED_Cmd2(uint8_t cmd, uint8_t arg)
  */
 static uint8_t OLED_WritePageData(const uint8_t *data, uint16_t len)
 {
-    uint8_t buf[OLED_WIDTH + 1U];
-
     if ((data == NULL) || (len == 0U) || (len > OLED_WIDTH))
     {
         return 0U;
     }
 
-    buf[0] = 0x40;      /* 控制字节：后面是数据 */
-    memcpy(&buf[1], data, len);
+    s_data_buf[0] = 0x40;     /* 控制字节：后面是数据 */
+    memcpy(&s_data_buf[1], data, len);
 
-    return (HAL_I2C_Master_Transmit(&hi2c2, (uint16_t)(OLED_I2C_ADDR_7BIT << 1),
-                                    buf, (uint16_t)(len + 1U),
-                                    OLED_I2C_TIMEOUT_MS) == HAL_OK) ? 1U : 0U;
+    return OLED_I2C_Send(s_data_buf, (uint16_t)(len + 1U));
 }
 
 /* ------------------------------------------------------------------------- */
@@ -131,6 +351,18 @@ static uint8_t OLED_WritePageData(const uint8_t *data, uint16_t len)
 
 uint8_t OLED_Init(void)
 {
+#if (OLED_ASYNC_MODE) && (OLED_USE_RTOS_SEM != 0U)
+    /* 创建 DMA 完成信号量。只需要创建一次，重复初始化时复用 */
+    if (s_dma_done_sem == NULL)
+    {
+        s_dma_done_sem = xSemaphoreCreateCounting(4U, 0U);
+        if (s_dma_done_sem == NULL)
+        {
+            return 0U;      /* 堆不够，无法安全使用 DMA */
+        }
+    }
+#endif
+
     /* SSD1306 上电后内部电荷泵需要稳定时间，手册要求约 100ms。
        这里给 100ms，避免刚上电就发命令被忽略。 */
     HAL_Delay(100U);
@@ -230,6 +462,20 @@ void OLED_Clear(void)
     memset(s_gram, 0x00, sizeof(s_gram));
 }
 
+void OLED_EnableAsync(void)
+{
+#if (OLED_ASYNC_MODE)
+    s_async_ready = 1U;
+#endif
+}
+
+void OLED_GetAsyncStats(uint32_t *ok, uint32_t *timeout, uint32_t *busy)
+{
+    if (ok != NULL)      { *ok      = s_async_ok; }
+    if (timeout != NULL) { *timeout = s_async_timeout; }
+    if (busy != NULL)    { *busy    = s_async_busy; }
+}
+
 uint8_t OLED_Refresh(void)
 {
     uint8_t page;
@@ -278,22 +524,6 @@ void OLED_DrawPoint(uint8_t x, uint8_t y, uint8_t color)
     {
         s_gram[page][px] &= (uint8_t)(~(1U << bit));
     }
-}
-
-uint8_t OLED_GetPoint(uint8_t x, uint8_t y)
-{
-    uint8_t px;
-    uint8_t py;
-
-    if ((x >= OLED_WIDTH) || (y >= OLED_HEIGHT))
-    {
-        return 0U;
-    }
-
-    px = OLED_Tx(x);
-    py = OLED_Ty(y);
-
-    return (uint8_t)((s_gram[py / 8U][px] >> (py % 8U)) & 0x01U);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -493,205 +723,13 @@ uint8_t OLED_ShowString(uint8_t x, uint8_t y, const char *text, uint8_t size, ui
     return cy;
 }
 
-uint8_t OLED_ShowNumber(uint8_t x, uint8_t y, int32_t num, uint8_t len, uint8_t size, uint8_t color)
-{
-    char    buf[16];
-    int     n;
-
-    /* 用 snprintf 统一处理符号位和补零，避免手写取模逻辑出错 */
-    n = snprintf(buf, sizeof(buf), "%*ld", (int)len, (long)num);
-
-    if (n <= 0)
-    {
-        return x;
-    }
-
-    return OLED_ShowString(x, y, buf, size, color);
-}
-
-uint8_t OLED_ShowFloat(uint8_t x, uint8_t y, float value, uint8_t decimals, uint8_t len,
-                       uint8_t size, uint8_t color)
-{
-    char  buf[24];
-    int   n = 0;
-    long  scale = 1;
-    uint8_t i;
-
-    if (decimals > 4U)
-    {
-        decimals = 4U;      /* 再多就没有显示价值了，且容易溢出 long */
-    }
-
-    for (i = 0U; i < decimals; i++)
-    {
-        scale *= 10;
-    }
-
-    /*
-     * 先按精度四舍五入到整数，再拆出整数部分和小数部分。
-     * 直接对负数做 (int) 截断会得到错误结果（-30.567 会变成 -30.56 而不是 -30.57），
-     * 所以这里有 +0.5 / -0.5 的处理。
-     */
-    {
-        float scaled = value * (float)scale;
-
-        scaled += (scaled >= 0.0f) ? 0.5f : -0.5f;
-
-        {
-            long fixed = (long)scaled;      /* 已含小数位的整数表示 */
-            long ipart = fixed / scale;
-            long fpart = fixed % scale;
-
-            if (fpart < 0)
-            {
-                fpart = -fpart;             /* 小数部分一律取正，符号由 ipart 带 */
-            }
-
-            if (decimals == 0U)
-            {
-                n = snprintf(buf, sizeof(buf), "%*ld", (int)len, ipart);
-            }
-            else
-            {
-                n = snprintf(buf, sizeof(buf), "%*ld.%0*ld",
-                             (int)len, ipart, (int)decimals, fpart);
-            }
-        }
-    }
-
-    if (n <= 0)
-    {
-        return x;
-    }
-
-    return OLED_ShowString(x, y, buf, size, color);
-}
-
 /* ------------------------------------------------------------------------- */
 /* 整车状态面板                                                                */
 /* ------------------------------------------------------------------------- */
 
-void OLED_ShowDashboard(const Line_PD_t *pd)
-{
-    char line[24];
-
-    OLED_Clear();
-
-    /* 行0：蓝牙连接状态 */
-    (void)snprintf(line, sizeof(line), "BT:%-3s  %s",
-                   (BLE_IsConnected() != 0U) ? "ON" : "OFF",
-                   (Gray_IsLineLost(&g_gray) != 0U) ? "LINE LOST" : "tracking");
-    OLED_ShowString(0U, 0U, line, OLED_FONT_6X8, OLED_WHITE);
-
-    /* 行1：灰度位置 */
-    (void)snprintf(line, sizeof(line), "pos:%+6.2fcm s:%4.1f",
-                   (double)Gray_GetPositionCm(&g_gray),
-                   (double)g_gray.strength);
-    OLED_ShowString(0U, 8U, line, OLED_FONT_6X8, OLED_WHITE);
-
-    if (pd != NULL)
-    {
-        /* 行2：循迹误差与差速量 */
-        (void)snprintf(line, sizeof(line), "err:%+6.2f st:%+6.2f",
-                       (double)pd->error, (double)pd->steer);
-        OLED_ShowString(0U, 16U, line, OLED_FONT_6X8, OLED_WHITE);
-
-        /* 行3、4：左右轮的目标速度与实测速度 */
-        (void)snprintf(line, sizeof(line), "L t:%5.1f m:%5.1f",
-                       (double)(pd->speed + pd->steer),
-                       (double)Encoder_GetSpeed(MOTOR_A));
-        OLED_ShowString(0U, 24U, line, OLED_FONT_6X8, OLED_WHITE);
-
-        (void)snprintf(line, sizeof(line), "R t:%5.1f m:%5.1f",
-                       (double)(pd->speed - pd->steer),
-                       (double)Encoder_GetSpeed(MOTOR_B));
-        OLED_ShowString(0U, 32U, line, OLED_FONT_6X8, OLED_WHITE);
-
-        /* 行5：外环 PD 参数与基础速度 */
-        (void)snprintf(line, sizeof(line), "PD kp%.0f kd%.1f b%.0f",
-                       (double)pd->kp, (double)pd->kd, (double)pd->base_speed);
-        OLED_ShowString(0U, 40U, line, OLED_FONT_6X8, OLED_WHITE);
-    }
-    else
-    {
-        OLED_ShowString(0U, 16U, "(no LinePD instance)", OLED_FONT_6X8, OLED_WHITE);
-        OLED_ShowString(0U, 24U, "L m:", OLED_FONT_6X8, OLED_WHITE);
-        OLED_ShowFloat(24U, 24U, Encoder_GetSpeed(MOTOR_A), 1U, 5U, OLED_FONT_6X8, OLED_WHITE);
-        OLED_ShowString(0U, 32U, "R m:", OLED_FONT_6X8, OLED_WHITE);
-        OLED_ShowFloat(24U, 32U, Encoder_GetSpeed(MOTOR_B), 1U, 5U, OLED_FONT_6X8, OLED_WHITE);
-    }
-
-    /* 行7：内环 PID 参数（从只读查询接口拿不到增益，这里显示编码器原始计数代替） */
-    (void)snprintf(line, sizeof(line), "enc %5u / %5u",
-                   (unsigned int)Encoder_GetCount(ENCODER_A),
-                   (unsigned int)Encoder_GetCount(ENCODER_B));
-    OLED_ShowString(0U, 56U, line, OLED_FONT_6X8, OLED_WHITE);
-
-    (void)OLED_Refresh();
-}
-
 /* ------------------------------------------------------------------------- */
 /* 自检                                                                        */
 /* ------------------------------------------------------------------------- */
-
-void OLED_TestSequence(void)
-{
-    uint8_t i;
-
-    /* ---- 1. 全屏点亮：检查坏点和 I2C 是否通 ---- */
-    memset(s_gram, 0xFF, sizeof(s_gram));
-    if (OLED_Refresh() == 0U)
-    {
-        /* 屏没应答，后面就不用试了 */
-        return;
-    }
-    HAL_Delay(1200U);
-
-    /* ---- 2. 边框 + 对角线 + 中心十字：检查坐标方向 ---- */
-    OLED_Clear();
-    OLED_DrawRect(0U, 0U, OLED_WIDTH, OLED_HEIGHT, 0U, OLED_WHITE);
-    OLED_DrawLine(0U, 0U, (uint8_t)(OLED_WIDTH - 1U), (uint8_t)(OLED_HEIGHT - 1U), OLED_WHITE);
-    OLED_DrawLine((uint8_t)(OLED_WIDTH - 1U), 0U, 0U, (uint8_t)(OLED_HEIGHT - 1U), OLED_WHITE);
-    OLED_DrawHLine(0U, (uint8_t)(OLED_HEIGHT / 2U), OLED_WIDTH, OLED_WHITE);
-    OLED_DrawVLine((uint8_t)(OLED_WIDTH / 2U), 0U, OLED_HEIGHT, OLED_WHITE);
-    OLED_Refresh();
-    HAL_Delay(1500U);
-
-    /* ---- 3. ASCII 字符表：检查字体数据 ---- */
-    OLED_Clear();
-    for (i = 0U; i < 40U; i++)
-    {
-        uint8_t col = (uint8_t)(i % 20U);
-        uint8_t row = (uint8_t)(i / 20U);
-
-        OLED_ShowChar((uint8_t)(col * 6U), (uint8_t)(row * 10U),
-                      (char)(0x21 + i), OLED_FONT_6X8, OLED_WHITE);
-    }
-    OLED_ShowString(0U, 24U, "0.96 OLED 128x64", OLED_FONT_6X8, OLED_WHITE);
-    OLED_ShowString(0U, 34U, "SSD1306 / I2C2", OLED_FONT_6X8, OLED_WHITE);
-    OLED_ShowString(0U, 44U, "abcdefghijklm", OLED_FONT_6X8, OLED_WHITE);
-    OLED_ShowString(0U, 54U, "NOPQRSTUVWXYZ", OLED_FONT_6X8, OLED_WHITE);
-    OLED_Refresh();
-    HAL_Delay(1800U);
-
-    /* ---- 4. 两种字体 + 数字格式：检查大小字体和数值显示 ---- */
-    OLED_Clear();
-    OLED_ShowString(0U, 0U, "BIG 8x16 FONT", OLED_FONT_8X16, OLED_WHITE);
-    OLED_ShowString(0U, 18U, "int:  ", OLED_FONT_6X8, OLED_WHITE);
-    OLED_ShowNumber(42U, 18U, -1234, 6U, OLED_FONT_6X8, OLED_WHITE);
-    OLED_ShowString(0U, 28U, "float:", OLED_FONT_6X8, OLED_WHITE);
-    OLED_ShowFloat(42U, 28U, -30.567f, 2U, 6U, OLED_FONT_6X8, OLED_WHITE);
-    OLED_ShowString(0U, 38U, "zero :", OLED_FONT_6X8, OLED_WHITE);
-    OLED_ShowFloat(42U, 38U, 0.0f, 2U, 6U, OLED_FONT_6X8, OLED_WHITE);
-    OLED_ShowString(0U, 48U, "pos  :", OLED_FONT_6X8, OLED_WHITE);
-    OLED_ShowFloat(42U, 48U, 123.456f, 1U, 6U, OLED_FONT_6X8, OLED_WHITE);
-    OLED_ShowString(0U, 56U, "test done", OLED_FONT_6X8, OLED_WHITE);
-    OLED_Refresh();
-    HAL_Delay(1500U);
-
-    OLED_Clear();
-    OLED_Refresh();
-}
 
 //
 // Created by JiangyaF on 2026/10/11.

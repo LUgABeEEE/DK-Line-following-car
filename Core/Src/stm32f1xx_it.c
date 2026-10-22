@@ -56,6 +56,8 @@
 
 /* External variables --------------------------------------------------------*/
 extern ADC_HandleTypeDef hadc1;
+extern DMA_HandleTypeDef hdma_i2c2_tx;
+extern I2C_HandleTypeDef hi2c2;
 extern UART_HandleTypeDef huart2;
 extern TIM_HandleTypeDef htim2;
 
@@ -87,6 +89,41 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
+
+  /*
+   * 硬故障指示器：让 LED1 快速闪烁（约 10Hz）。
+   *
+   * 用途：区分两种"卡死"——
+   *   1. LED1 高速闪 -> 发生了硬件异常（空指针、越界、非对齐访问等）
+   *   2. LED1 不动   -> 不是硬故障，而是 configASSERT 死循环
+   *                     （taskDISABLE_INTERRUPTS 后 CPU 停在原地）
+   *
+   * 注意：这里不能用 HAL_Delay（依赖 SysTick 中断，而故障时中断可能已关），
+   *      必须用忙等延时。
+   */
+  {
+    volatile uint32_t i;
+
+    /* 打开 GPIOB 时钟（故障发生前时钟已开，这里保险起见） */
+    RCC->APB2ENR |= RCC_APB2ENR_IOPBEN;
+
+    /* 把 PB5(LED1) 配成推挽输出 */
+    GPIOB->CRL &= ~(0xFU << 20);      /* 清 PB5 的 4 位配置 */
+    GPIOB->CRL |=  (0x2U << 20);      /* 2MHz 推挽输出 */
+
+    for (;;)
+    {
+      /* LED1 亮（低电平点亮） */
+      GPIOB->BRR = (1U << 5);
+
+      for (i = 0; i < 200000U; i++) { __NOP(); }
+
+      /* LED1 灭 */
+      GPIOB->BSRR = (1U << 5);
+
+      for (i = 0; i < 200000U; i++) { __NOP(); }
+    }
+  }
 
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
@@ -221,6 +258,20 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /**
+  * @brief This function handles DMA1 channel4 global interrupt.
+  */
+void DMA1_Channel4_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA1_Channel4_IRQn 0 */
+
+  /* USER CODE END DMA1_Channel4_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_i2c2_tx);
+  /* USER CODE BEGIN DMA1_Channel4_IRQn 1 */
+
+  /* USER CODE END DMA1_Channel4_IRQn 1 */
+}
+
+/**
   * @brief This function handles ADC1 and ADC2 global interrupts.
   */
 void ADC1_2_IRQHandler(void)
@@ -246,6 +297,34 @@ void TIM2_IRQHandler(void)
   /* USER CODE BEGIN TIM2_IRQn 1 */
 
   /* USER CODE END TIM2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles I2C2 event interrupt.
+  */
+void I2C2_EV_IRQHandler(void)
+{
+  /* USER CODE BEGIN I2C2_EV_IRQn 0 */
+
+  /* USER CODE END I2C2_EV_IRQn 0 */
+  HAL_I2C_EV_IRQHandler(&hi2c2);
+  /* USER CODE BEGIN I2C2_EV_IRQn 1 */
+
+  /* USER CODE END I2C2_EV_IRQn 1 */
+}
+
+/**
+  * @brief This function handles I2C2 error interrupt.
+  */
+void I2C2_ER_IRQHandler(void)
+{
+  /* USER CODE BEGIN I2C2_ER_IRQn 0 */
+
+  /* USER CODE END I2C2_ER_IRQn 0 */
+  HAL_I2C_ER_IRQHandler(&hi2c2);
+  /* USER CODE BEGIN I2C2_ER_IRQn 1 */
+
+  /* USER CODE END I2C2_ER_IRQn 1 */
 }
 
 /**

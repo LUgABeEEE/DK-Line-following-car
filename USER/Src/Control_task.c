@@ -23,6 +23,7 @@
 #include "Key.h"
 #include "Ble.h"
 #include "Oled.h"
+#include "Oled_task.h"
 
 extern Gray_Sensor_t g_gray;
 extern Line_PD_t     g_line_pd;
@@ -111,20 +112,37 @@ static void ControlTask_Main(void *argument)
             Key_Scan();
             BLE_UpdateLed();
 
-            /* 按键处理示例：KEY1 短按切换 LED1，KEY2 长按停车。
-               等实车调试阶段再扩展成菜单。 */
+            /* 按键事件分发。
+               KEY1/KEY2 的短按交给 OLED 任务计数（通过计数信号量），
+               长按保留作急停。 */
             {
                 uint32_t key;
                 uint8_t  event;
 
                 while (Key_GetEvent(&key, &event) != 0U)
                 {
-                    if ((key == KEY_1) && (event == KEY_EVENT_PRESS))
+                    if (event == KEY_EVENT_PRESS)
                     {
-                        Led_Toggle(LED_1);
+                        if ((key == KEY_1) || (key == KEY_2))
+                        {
+                            /*
+                             * 关键：这里调用 xSemaphoreGive() 把按键"记账"，
+                             * 而不是直接改数字。
+                             *
+                             * 为什么：本任务 20ms 循环一次，OLED 任务 100ms
+                             * 才处理一次。如果用户在两帧之间连按 3 次，
+                             * 这里每按一次 Give 一次，信号量计数变成 3；
+                             * OLED 任务下次取走时一次加上 3，不会丢。
+                             *
+                             * 如果直接 OledTask_GetCounter() + 1 再写回，
+                             * 反而会丢失（因为写回是覆盖式的）。
+                             */
+                            (void)OledTask_NotifyKeyPress(key);
+                        }
                     }
                     else if ((key == KEY_2) && (event == KEY_EVENT_LONG_PRESS))
                     {
+                        /* 长按 KEY2：急停（保留的安全功能） */
                         Speed_PID_StopAll();
                         LinePD_Stop(&g_line_pd);
                         Led_Off(LED_1);

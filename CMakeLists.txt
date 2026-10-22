@@ -53,8 +53,10 @@ add_executable(${CMAKE_PROJECT_NAME}
         Drivers/BSD/Inc/Oled.h
         USER/Src/Ble_task.c
         USER/Src/Control_task.c
+        USER/Src/Oled_task.c
         USER/Inc/Ble_task.h
         USER/Inc/Control_task.h
+        USER/Inc/Oled_task.h
 
 
 )
@@ -75,6 +77,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         # 用户任务层（FreeRTOS 任务）
         USER/Src/Ble_task.c
         USER/Src/Control_task.c
+        USER/Src/Oled_task.c
         #Freertos kernel sources
         FreeRTOS/Src/croutine.c
         FreeRTOS/Src/event_groups.c

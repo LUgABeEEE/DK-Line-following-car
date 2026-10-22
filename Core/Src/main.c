@@ -32,6 +32,8 @@
 #include "Oled.h"
 #include "Ble_task.h"
 #include "Control_task.h"
+#include "Oled_task.h"
+#include <stdio.h>      /* snprintf：OLED 诊断输出 */
 #include <string.h>     /* strlen：蓝牙换速提示信息用 */
 /* USER CODE END Includes */
 
@@ -55,6 +57,7 @@ ADC_HandleTypeDef hadc1;
 
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c2;
+DMA_HandleTypeDef hdma_i2c2_tx;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim3;
@@ -76,6 +79,7 @@ Line_PD_t g_line_pd;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_I2C2_Init(void);
 static void MX_TIM3_Init(void);
@@ -90,6 +94,52 @@ static void MX_USB_PCD_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/**
+  * @brief I2C 主机发送完成回调。
+  *
+  * 为什么定义在 main.c 而不是 Oled.c：
+  *   当 USE_HAL_I2C_REGISTER_CALLBACKS = 0 时（CubeMX 默认），HAL 库内部
+  *   带有一个 __weak 的 HAL_I2C_MasterTxCpltCallback。链接器解析 HAL 自己
+  *   的调用时，会先用库里的弱符号满足，导致写在 Oled.c 的强定义被
+  *   --gc-sections 丢弃（回调永远不执行）。
+  *
+  *   main.c 的 .o 是强制参与链接的，在它里面定义强符号才能真正覆盖弱符号。
+  *
+  *   注意：USE_HAL_I2C_REGISTER_CALLBACKS 在 stm32f1xx_hal_conf.h 里，
+  *        CubeMX 重新生成代码时会把它改回 0，所以不要依赖那个宏。
+  */
+void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+  if (hi2c->Instance == I2C2)
+  {
+    /* 通知 OLED 驱动：这一笔传输已经完成，可以发下一笔了 */
+    OLED_NotifyTxComplete();
+  }
+}
+
+/**
+  * @brief I2C 错误回调（NACK / 总线错误 / 仲裁丢失等）。
+  *
+  * 为什么必须实现这个回调：
+  *   中断模式下，如果屏没有应答（拔掉了、地址不对、上拉缺失），
+  *   HAL 只会调用 ErrorCallback，**不会**调用 TxCpltCallback。
+  *   如果这里不释放信号量，OLED 驱动要白等满 OLED_DMA_TIMEOUT_MS(50ms)
+  *   才超时返回，一帧 33 次传输就是 1.6 秒，屏幕看起来像卡死了。
+  *
+  * 这里同样调用 OLED_NotifyTxComplete()，让等待方立即醒来，
+  * 由 OLED_I2C_Send 的返回值把失败上报给上层。
+  */
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
+{
+  if (hi2c->Instance == I2C2)
+  {
+    /* 清掉错误标志，避免下一笔传输被残留错误影响 */
+    hi2c->ErrorCode = HAL_I2C_ERROR_NONE;
+
+    OLED_NotifyTxComplete();
+  }
+}
 
 /* USER CODE END 0 */
 
@@ -122,6 +172,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_I2C1_Init();
   MX_I2C2_Init();
   MX_TIM3_Init();
@@ -141,9 +192,16 @@ int main(void)
   BLE_Init();              /* KEY 拉低=透传模式，启动 USART2 字节中断接收 */
 
   /*
-   * OLED 初始化。返回 0 表示屏没有应答（I2C 不通）。
-   * 显示只是辅助功能，初始化失败绝不能影响整车运行，所以这里只重试一次、
-   * 失败就放弃，不进入 Error_Handler（后续 OLED_xxx 调用仍会尝试，只是画不出东西）。
+   * OLED 初始化。
+   *
+   * 验证阶段的"整屏填白 3 秒"测试已经移除——它每次上电都会盖住
+   * OledTask 的第一帧显示，正式运行时不需要。
+   *
+   * 如果以后需要重新做亮屏排查，取消下面这行的注释即可：
+   *     OLED_FillTest();  HAL_Delay(3000);
+   *
+   * 返回 0 表示屏无应答（I2C 不通）。显示是辅助功能，失败不影响整车运行，
+   * 所以这里只重试一次、失败就放弃，不进入 Error_Handler。
    */
   if (OLED_Init() == 0U)
   {
@@ -167,7 +225,7 @@ int main(void)
    *   4. 调用 BLE_ExitATMode()（KEY 拉低）+ 断电重启
    */
   {
-    const char *msg = "\r\n[BLE] HC-05 ready (transparent mode, 9600 8N1)\r\n";
+    const char *msg = "\r\n[BLE] HC-05 ready (transparent, 9600 8N1)\r\n";
     HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)strlen(msg), 100U);
   }
 
@@ -195,7 +253,8 @@ int main(void)
    */
   if (BleTask_Init() == 0U)
   {
-    /* 堆不够。把 configTOTAL_HEAP_SIZE 调大，或减小 BLE_TASK_STACK_WORDS */
+    HAL_UART_Transmit(&huart2, (uint8_t *)"[FATAL] BleTask create FAILED\r\n",
+                      33U, 100U);
     Error_Handler();
   }
 
@@ -206,6 +265,19 @@ int main(void)
    */
   if (ControlTask_Init() == 0U)
   {
+    HAL_UART_Transmit(&huart2, (uint8_t *)"[FATAL] ControlTask create FAILED\r\n",
+                      36U, 100U);
+    Error_Handler();
+  }
+
+  /*
+   * 创建 OLED 显示任务（优先级 1，最低）。
+   * 内部会创建两个计数信号量（KEY1/KEY2 各一个），用于累计按键次数。
+   */
+  if (OledTask_Init() == 0U)
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)"[FATAL] OledTask create FAILED (heap?)\r\n",
+                      42U, 100U);
     Error_Handler();
   }
 
@@ -219,6 +291,19 @@ int main(void)
    * ControlTask_Main()，这里不再保留任何业务代码。
    */
   vTaskStartScheduler();
+
+  /*
+   * 能执行到这里 = 调度器启动失败（正常情况永不返回）。
+   * 最常见原因：空闲任务或定时器任务创建不出来（堆不足）。
+   */
+  {
+    char dbg[128];
+
+    (void)snprintf(dbg, sizeof(dbg),
+                   "[FATAL] scheduler NOT started! free heap=%u (need >=1300)\r\n",
+                   (unsigned int)xPortGetFreeHeapSize());
+    HAL_UART_Transmit(&huart2, (uint8_t *)dbg, (uint16_t)strlen(dbg), 100U);
+  }
 
   Error_Handler();
   /* USER CODE END 2 */
@@ -579,11 +664,6 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  /*
-   * HC-05 默认通信波特率是 9600（不是 JDY-31 的 9600 那种"可配置档位"，
-   * 而是模块出厂就固定 9600）。
-   * 如果以后用 AT+UART 改了模块波特率，这里也要同步改。
-   */
   huart2.Init.BaudRate = 9600;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
@@ -629,6 +709,22 @@ static void MX_USB_PCD_Init(void)
   /* USER CODE BEGIN USB_Init 2 */
 
   /* USER CODE END USB_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 6, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
 
 }
 

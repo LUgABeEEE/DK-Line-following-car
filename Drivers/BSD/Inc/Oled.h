@@ -59,6 +59,71 @@
  */
 #define OLED_I2C_TIMEOUT_MS     50U
 
+/* ------------------------------------------------------------------------- */
+/* DMA 配置                                                                    */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * 1 = 用 DMA 发送（CubeMX 里已给 I2C2 配了 DMA1_Channel4 TX）
+ * 0 = 用阻塞式轮询发送（原来的方式）
+ *
+ * 用 DMA 的好处：
+ *   - CPU 不用逐字节喂 I2C，可以去做别的事
+ *   - 128 字节一页的传输完全由 DMA 搬运
+ *
+ * 用 DMA 必须处理两件事（本驱动已处理）：
+ *   1. 发送缓冲区必须是【静态】的，不能放栈上——DMA 是异步的，
+ *      函数返回后栈会被覆盖，DMA 就会读到垃圾数据
+ *   2. 必须等上一笔 DMA 完成才能发下一笔，否则 HAL 返回 HAL_BUSY
+ */
+#define OLED_USE_DMA            1U
+
+/*
+ * 1 = 用 I2C 中断方式发送（HAL_I2C_Master_Transmit_IT）
+ *
+ * 与 DMA 的区别：
+ *   - 数据由 CPU 在中断里逐字节搬运（DMA 由硬件搬运）
+ *   - 不需要 DMA 通道，只用到 I2C2_EV 中断
+ *   - 比轮询省 CPU（发送期间任务阻塞，CPU 去做别的事）
+ *   - 比 DMA 多占用一点 CPU（中断服务程序逐字节处理）
+ *
+ * 三个模式互斥，优先级：DMA > IT > 轮询。
+ * 全部关掉就退化为轮询。
+ */
+#define OLED_USE_IT             0U
+
+/*
+ * 是否使用"异步传输 + 信号量等待"模式（IT 或 DMA 任一开启即为真）
+ *
+ * 异步模式的两个前提（缺一不可）：
+ *   1. I2C2_EV_IRQn 优先级数值 >= 5
+ *      否则中断里调 xSemaphoreGiveFromISR 会触发 configASSERT 死机
+ *   2. 只能在调度器启动后使用
+ *      调度器启动前调用 xSemaphoreTake 会卡死整个系统，
+ *      所以 OLED_Init() 阶段强制走轮询（见 Oled.c 里 s_async_ready）
+ */
+#define OLED_ASYNC_MODE         ((OLED_USE_DMA != 0U) || (OLED_USE_IT != 0U))
+
+/*
+ * 1 = 用 FreeRTOS 信号量等待传输完成（任务阻塞，CPU 可做别的事）
+ * 0 = 轮询 hi2c2.State 等待完成（不调用任何 FreeRTOS API）
+ *
+ * 【诊断用】设为 0 可以把"中断传输"和"信号量等待"两件事分开：
+ *   - IT=1, SEM=0 : I2C 中断负责搬数据，主循环轮询状态等完成
+ *                   全程不调用 xSemaphoreGiveFromISR，不会触发优先级断言
+ *   - IT=1, SEM=1 : 中断里给信号量，任务阻塞等待（需要优先级正确）
+ *
+ * 如果 SEM=0 能工作而 SEM=1 卡死，就说明问题在
+ * xSemaphoreGiveFromISR 的优先级校验，而不是 I2C 中断本身。
+ */
+#define OLED_USE_RTOS_SEM       0U
+
+/*
+ * 等待一笔 DMA 传输完成的最长时间，单位 ms。
+ * 一页 129 字节 @100kHz 约 12ms，给 50ms 留足余量。
+ */
+#define OLED_DMA_TIMEOUT_MS     50U
+
 /* 是否启用本地显存。1 = 启用（推荐），0 = 每次绘制直接写屏（极慢，仅调试用） */
 #define OLED_ENABLE_FRAMEBUFFER 1
 
@@ -93,6 +158,53 @@
  */
 uint8_t OLED_Init(void);
 
+/*
+ * 通知 OLED 驱动：一笔 I2C DMA 传输已完成。
+ *
+ * 【必须由 HAL_I2C_MasterTxCpltCallback() 调用】——本驱动不自己定义
+ * 那个回调，因为 USE_HAL_I2C_REGISTER_CALLBACKS=0 时 HAL 库自带 __weak
+ * 版本，写在本文件里的强定义会被链接器丢弃。
+ *
+ * 调用方（main.c）的写法：
+ *     void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
+ *     {
+ *         if (hi2c->Instance == I2C2) { OLED_NotifyTxComplete(); }
+ *     }
+ *
+ * 如果在中断上下文调用（这是预期用法），本函数内部用
+ * xSemaphoreGiveFromISR，是安全的。
+ */
+void OLED_NotifyTxComplete(void);
+
+/*
+ * 启用异步传输（I2C 中断 或 DMA）。
+ *
+ * 【必须在 FreeRTOS 调度器启动之后调用】——通常放在显示任务的开头。
+ *
+ * 为什么不能在 OLED_Init() 里自动启用：
+ *   OLED_Init() 在 vTaskStartScheduler() 之前调用，此时调用
+ *   xSemaphoreTake() 会让系统卡死（pxCurrentTCB 尚未建立）。
+ *   所以初始化阶段强制走轮询，等调度器跑起来后再由任务调用本函数
+ *   切到 DMA。
+ *
+ * 调用前：轮询发送（安全，但 CPU 占用高）
+ * 调用后：中断/DMA 发送（任务阻塞等待完成，CPU 可做别的事）
+ */
+void OLED_EnableAsync(void);
+
+/*
+ * 读取异步传输诊断计数（轮询模式下始终为 0）。
+ *   ok      : 成功的中断/DMA 传输次数
+ *   timeout : 等待完成的超时次数
+ *   busy    : HAL 返回 BUSY 的次数
+ *
+ * 判断标准：
+ *   ok 持续增长、timeout=0、busy=0  -> DMA 工作正常
+ *   timeout 增长                     -> 中断/回调链有问题
+ *   busy 增长                        -> 上一笔没等干净
+ */
+void OLED_GetAsyncStats(uint32_t *ok, uint32_t *timeout, uint32_t *busy);
+
 /* 清空显存（注意：还需要调用 OLED_Refresh 才会真正清屏）。 */
 void OLED_Clear(void);
 
@@ -119,9 +231,6 @@ uint8_t OLED_SetFlip(uint8_t flip);
 
 /* 画一个点。坐标越界会被安全忽略。 */
 void OLED_DrawPoint(uint8_t x, uint8_t y, uint8_t color);
-
-/* 读一个点的当前颜色。 */
-uint8_t OLED_GetPoint(uint8_t x, uint8_t y);
 
 /* 画水平线 / 垂直线。 */
 void OLED_DrawHLine(uint8_t x, uint8_t y, uint8_t w, uint8_t color);
@@ -150,50 +259,5 @@ uint8_t OLED_ShowChar(uint8_t x, uint8_t y, char ch, uint8_t size, uint8_t color
  * 返回显示结束后的 y 坐标。
  */
 uint8_t OLED_ShowString(uint8_t x, uint8_t y, const char *text, uint8_t size, uint8_t color);
-
-/*
- * 显示有符号整数。
- *   num    : 数值
- *   len    : 最小位宽，不足时左边补空格
- * 返回下一个字符的 x 坐标。
- */
-uint8_t OLED_ShowNumber(uint8_t x, uint8_t y, int32_t num, uint8_t len, uint8_t size, uint8_t color);
-
-/*
- * 显示定点小数，例如 OLED_ShowFloat(x, y, 30.567f, 2, 6, ...) 显示 "30.57"。
- *   decimals : 小数位数，建议不超过 3
- */
-uint8_t OLED_ShowFloat(uint8_t x, uint8_t y, float value, uint8_t decimals, uint8_t len,
-                       uint8_t size, uint8_t color);
-
-/* ---- 本项目专用：把整车状态一次画出来 ---- */
-
-/*
- * 显示一屏调试信息。请每 100ms 左右调用一次（和外环同频即可）。
- *
- * 内容布局（6x8 字体，8 行 x 21 列）：
- *   行0: 蓝牙连接状态
- *   行1: 灰度位置 pos / 丢线标志
- *   行2: 循迹误差 err / 差速量 steer
- *   行3: 左轮 目标 / 实测 (cm/s)
- *   行4: 右轮 目标 / 实测 (cm/s)
- *   行5: 外环 PD 参数
- *   行6: 内环 PID 参数
- *   行7: 状态提示
- *
- * pd 传主程序里的 Line_PD_t 实例地址。本函数只读各模块的查询接口，
- * 不改变任何控制状态，可以放心随时调用。
- */
-void OLED_ShowDashboard(const Line_PD_t *pd);
-
-/*
- * 自检：阻塞约 5 秒，依次显示
- *   1. 全屏点亮（检查坏点）
- *   2. 边框 + 对角线
- *   3. ASCII 字符表
- *   4. 两种字体的示例文字
- * 用于确认 I2C 通路、寻址模式、坐标方向是否正确。
- */
-void OLED_TestSequence(void);
 
 #endif //LINEFLLOWING_CAR_OLED_H
