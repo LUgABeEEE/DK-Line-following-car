@@ -185,6 +185,48 @@ static int32_t Encoder_DirSign(uint32_t index)
                                 : (int32_t)ENCODER_B_DIR_SIGN;
 }
 
+/*
+ * 分轮修正系数（运行时变量）。
+ *
+ * 作用：修正两路编码器"每计数对应距离"的微小差异。
+ * 如果两轮读数相同但车仍然跑偏，就是这个系数需要微调。
+ *
+ * 初值来自 Encoder.h 的 ENCODER_A_FIX / ENCODER_B_FIX，
+ * 但之后可以通过 Encoder_SetFix() 在调参界面实时修改。
+ */
+static float s_fix_factor[ENCODER_COUNT] =
+{
+    ENCODER_A_FIX,      /* ENCODER_A */
+    ENCODER_B_FIX,      /* ENCODER_B */
+};
+
+float Encoder_GetFix(uint32_t index)
+{
+    if (index >= ENCODER_COUNT)
+    {
+        return 1.0f;
+    }
+    return s_fix_factor[index];
+}
+
+void Encoder_SetFix(uint32_t index, float value)
+{
+    /* 合理范围限制：修正量超过 ±10% 说明机械/接线有别的问题 */
+    if (index >= ENCODER_COUNT)
+    {
+        return;
+    }
+    if (value < 0.90f)
+    {
+        value = 0.90f;
+    }
+    else if (value > 1.10f)
+    {
+        value = 1.10f;
+    }
+    s_fix_factor[index] = value;
+}
+
 void Encoder_UpdateSpeed(void)
 {
     uint32_t i;
@@ -210,11 +252,13 @@ void Encoder_UpdateSpeed(void)
         }
         s_last_tick[i] = now_tick;
 
-        /* 距离：计数 -> mm -> cm */
-        s_distance_cm[i] += (float)d * ENCODER_MM_PER_COUNT * 0.1f;
+        /* 距离：计数 -> mm -> cm（乘分轮修正系数） */
+        s_distance_cm[i] += (float)d * ENCODER_MM_PER_COUNT
+                            * s_fix_factor[i] * 0.1f;
 
-        /* 速度：单位 mm/ms = m/s，乘 100 得 cm/s */
-        raw_cms = (float)d * ENCODER_MM_PER_COUNT / (float)dt_ms * 100.0f;
+        /* 速度：单位 mm/ms = m/s，乘 100 得 cm/s（同样乘修正系数） */
+        raw_cms = (float)d * ENCODER_MM_PER_COUNT * s_fix_factor[i]
+                  / (float)dt_ms * 100.0f;
 
         /* 一阶低通滤波，抑制低速时的量化抖动 */
         s_speed_cms[i] += ENCODER_SPEED_FILTER * (raw_cms - s_speed_cms[i]);

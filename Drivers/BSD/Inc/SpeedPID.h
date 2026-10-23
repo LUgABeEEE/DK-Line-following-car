@@ -73,6 +73,38 @@ typedef struct
 /* 速度环执行周期，单位 ms。必须与 ENCODER_PERIOD_MS 保持一致 */
 #define SPEED_PID_PERIOD_MS         ENCODER_PERIOD_MS
 
+/* ------------------------------------------------------------------------- */
+/* 积分分离（Integral Separation）                                             */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * 误差超过这个值时【暂停积分】，只靠 P 和 FF 拉。
+ *
+ * 解决的问题（这是"起步转圈"的直接原因）：
+ *   车子静止在硬地面上起步时，两轮的静摩擦不同，可能一个先转一个卡着。
+ *   卡住那一路的误差会长时间维持在很大值，积分项一路累加到限幅，
+ *   等它终于挣脱时输出已经打满 100%，就会猛地窜出去。
+ *   两轮速度差一大，整车就原地转圈。
+ *
+ * 加了积分分离后：
+ *   大误差阶段不积分（避免快速饱和），只用比例项快速接近目标；
+ *   误差进入小区间后才开始积分，用它消除稳态误差。
+ *
+ * 取 8 cm/s 的依据：
+ *   正常巡航 15~30 cm/s，稳态误差通常 < 1 cm/s，
+ *   起步瞬间误差可达 15~30 cm/s，8 能把两者清楚分开。
+ */
+#define SPEED_PID_INTEGRAL_SEPARATION_CMS   8.0f
+
+/*
+ * 积分项限幅相对输出上限的比例。
+ *
+ * 原来直接等于输出上限（±100），意味着积分单独就能把输出打满，
+ * 抗饱和的余量完全没用上。取 40% 让积分只负责"消除稳态误差"，
+ * 不该由它去承担"提供主要驱动力"——那是 KFF 和前馈的活。
+ */
+#define SPEED_PID_INTEGRAL_RATIO            0.40f
+
 /* 目标速度限幅，单位 cm/s。防止外环异常时给出离谱目标值 */
 #define SPEED_LIMIT_CMS             80.0f
 
@@ -98,6 +130,32 @@ typedef struct
  * 起点：1.0f 对应"30cm/s 给 30% 占空比"；电机偏弱或轮径偏小可加到 1.3~1.6。
  */
 void Speed_PID_SetGains(uint32_t motor, float kp, float ki, float kd, float kff);
+
+/* ------------------------------------------------------------------------- */
+/* 单个增益的读写（供按键调参用）                                              */
+/* ------------------------------------------------------------------------- */
+
+/* which 参数取值 */
+#define SPEED_PID_GAIN_KP       0U
+#define SPEED_PID_GAIN_KI       1U
+#define SPEED_PID_GAIN_KD       2U
+#define SPEED_PID_GAIN_KFF      3U
+#define SPEED_PID_GAIN_COUNT    4U
+
+/*
+ * 读取某个增益。motor 传 MOTOR_A 或 MOTOR_B。
+ * 越界参数返回 0.0f。
+ */
+float Speed_PID_GetGain(uint32_t motor, uint8_t which);
+
+/*
+ * 设置单个增益（内部会 Reset 该通道的积分和滤波状态）。
+ *
+ * 为什么改参数要 Reset：
+ *   改了 KP 之后，之前累积的积分量是基于旧的闭环特性算出来的，
+ *   继续沿用会让第一拍输出突变。Reset 让新参数从干净状态开始收敛。
+ */
+void Speed_PID_SetGain(uint32_t motor, uint8_t which, float value);
 
 /*
  * 初始化：把两个轮子的控制器恢复到编译期默认参数并清零全部运行状态。

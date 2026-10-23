@@ -618,7 +618,18 @@ static void MX_TIM4_Init(void)
 
   /* USER CODE END TIM4_Init 1 */
   htim4.Instance = TIM4;
-  htim4.Init.Prescaler = 0;
+  /*
+   * ⚠️ 必须和 TIM3 一致！
+   *
+   * 两路编码器如果预分频不同，同样的转速会算出完全不同的速度值，
+   * 速度环就会一路正常、一路疯狂震荡。
+   *
+   * 历史问题：这里原来是 0（CubeMX 的默认值，因为 .ioc 里
+   * TIM4.IPParameters 没有 Prescaler 这一项），而 TIM3 是 49。
+   * 结果 A 轮计数率是 B 轮的 50 倍，实测速度虚高 50 倍，
+   * 表现为"A 轮 out 一直跳变、车轮一顿一顿"。
+   */
+  htim4.Init.Prescaler = 49;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim4.Init.Period = 65535;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;

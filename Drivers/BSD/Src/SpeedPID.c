@@ -77,8 +77,12 @@ void Speed_PID_Init(void)
          * 积分项自己最多只能把输出顶到满量程，不会无限累积。
          * 第二道防线是下面的"条件积分"。
          */
-        pid->integral_min = pid->output_min;
-        pid->integral_max = pid->output_max;
+        /*
+         * 积分项限幅 = 输出限幅 × SPEED_PID_INTEGRAL_RATIO。
+         * 不让积分单独就能把输出打满，给它留出抗饱和余量。
+         */
+        pid->integral_min = pid->output_min * SPEED_PID_INTEGRAL_RATIO;
+        pid->integral_max = pid->output_max * SPEED_PID_INTEGRAL_RATIO;
 
         /* 默认关闭微分滤波（kd 默认为 0，暂时用不上） */
         pid->d_filter = 1.0f;
@@ -128,6 +132,47 @@ void Speed_PID_Reset(uint32_t motor)
 /* ------------------------------------------------------------------------- */
 /* PID 核心                                                                    */
 /* ------------------------------------------------------------------------- */
+
+float Speed_PID_GetGain(uint32_t motor, uint8_t which)
+{
+    Speed_PID_t *pid = Speed_PID_Get(motor);
+
+    if (pid == NULL)
+    {
+        return 0.0f;
+    }
+
+    switch (which)
+    {
+    case SPEED_PID_GAIN_KP:  return pid->kp;
+    case SPEED_PID_GAIN_KI:  return pid->ki;
+    case SPEED_PID_GAIN_KD:  return pid->kd;
+    case SPEED_PID_GAIN_KFF: return pid->kff;
+    default:                 return 0.0f;
+    }
+}
+
+void Speed_PID_SetGain(uint32_t motor, uint8_t which, float value)
+{
+    Speed_PID_t *pid = Speed_PID_Get(motor);
+
+    if (pid == NULL)
+    {
+        return;
+    }
+
+    switch (which)
+    {
+    case SPEED_PID_GAIN_KP:  pid->kp  = value; break;
+    case SPEED_PID_GAIN_KI:  pid->ki  = value; break;
+    case SPEED_PID_GAIN_KD:  pid->kd  = value; break;
+    case SPEED_PID_GAIN_KFF: pid->kff = value; break;
+    default: return;
+    }
+
+    /* 参数变了，积分和微分滤波状态都失去意义，清掉重新收敛 */
+    Speed_PID_Reset(motor);
+}
 
 float Speed_PID_Update(uint32_t motor, float target)
 {
@@ -188,7 +233,19 @@ float Speed_PID_Update(uint32_t motor, float target)
         uint8_t pushing_positive = (pid->saturated == 1U) && (error > 0.0f);
         uint8_t pushing_negative = (pid->saturated == 2U) && (error < 0.0f);
 
-        if ((pushing_positive == 0U) && (pushing_negative == 0U))
+        /*
+         * 积分分离：误差过大时暂停积分。
+         *
+         * 起步瞬间误差可达十几 cm/s，这时积分累积得又快又没意义
+         * （反正输出已经被比例项拉满），等误差降下来再开始积分。
+         * 这样能彻底避免"卡住的一路积分打满、挣脱时猛窜"的问题。
+         */
+        float abs_error = (error < 0.0f) ? -error : error;
+        uint8_t integral_enabled =
+            (abs_error < SPEED_PID_INTEGRAL_SEPARATION_CMS) ? 1U : 0U;
+
+        if ((pushing_positive == 0U) && (pushing_negative == 0U) &&
+            (integral_enabled != 0U))
         {
             if (integral_candidate > pid->integral_max)
             {

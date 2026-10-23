@@ -36,10 +36,23 @@ extern I2C_HandleTypeDef hi2c1;
 static TaskHandle_t s_task_handle = NULL;
 
 /*
- * 电机手动模式标志（详见 Control_task.h 的说明）。
- * 上电默认 0 = 正常 PID 控制。
+ * 运行模式（详见 Control_task.h）。
+ * 上电默认进入【速度环测试】——当前阶段的目标就是调内环。
  */
-volatile uint8_t g_motor_manual_mode = 0U;
+volatile uint8_t g_ctrl_mode       = CTRL_MODE_SPEED_TEST;
+volatile float   g_speed_test_target = 0.0f;
+
+/*
+ * 斜坡化之后的目标速度（内部状态）。
+ * 实际下发给内环的是这个值，而不是 g_speed_test_target 的阶跃值。
+ */
+static float s_ramped_target = 0.0f;
+
+/*
+ * 上一拍的模式，用于检测"刚切换到 STOP"这个瞬间。
+ * 进入停车模式时需要清一次 PID 状态，之后就不必每拍都清。
+ */
+static uint8_t s_last_mode = CTRL_MODE_SPEED_TEST;
 
 /* ------------------------------------------------------------------------- */
 /* 任务主体                                                                    */
@@ -70,28 +83,89 @@ static void ControlTask_Main(void *argument)
         /* ================= 节拍 1：内环速度环，20ms ================= */
         Encoder_UpdateSpeed();
 
-        if (CTRL_TASK_ENABLE_MOTION != 0)
+        switch (g_ctrl_mode)
         {
+        case CTRL_MODE_LINE_FOLLOW:
             /*
-             * 外环会把左右轮目标速度写进内环（LinePD_Update 内部调用
-             * Speed_PID_Update）。这里不再重复调用，避免一周期内跑两次 PID
-             * 导致积分步长翻倍。
+             * 双环模式：外环 LinePD_Update（在外环节拍里）会调用
+             * Speed_PID_Update 把左右轮目标写进内环。
+             * 这里不能重复调用，否则一周期跑两次 PID，积分步长翻倍。
              */
-        }
-        else if (g_motor_manual_mode == 0U)
-        {
-            /* 安全模式：目标速度锁 0，电机保持停止 */
-            Speed_PID_Update(MOTOR_A, 0.0f);
-            Speed_PID_Update(MOTOR_B, 0.0f);
-        }
-        else
-        {
+            break;
+
+        case CTRL_MODE_SPEED_TEST:
             /*
-             * 手动模式：完全不碰电机。
-             * 这里不能调用 Speed_PID_Update，否则 PID 会把电机拉回 0，
-             * 覆盖蓝牙任务设置的转速。
+             * 速度环测试：两轮追踪同一个目标速度，带加减速斜坡。
+             *
+             * 每 20ms 最多变化 SPEED_RAMP_CMS_PER_SEC * 0.02 = 0.8 cm/s。
+             * 目标 20 cm/s 大约 0.5 秒爬到，避免阶跃起步时两轮不同步。
              */
+            {
+                float step = SPEED_RAMP_CMS_PER_SEC
+                           * ((float)SPEED_PID_PERIOD_MS / 1000.0f);
+
+                if (s_ramped_target < g_speed_test_target)
+                {
+                    s_ramped_target += step;
+                    if (s_ramped_target > g_speed_test_target)
+                    {
+                        s_ramped_target = g_speed_test_target;
+                    }
+                }
+                else if (s_ramped_target > g_speed_test_target)
+                {
+                    s_ramped_target -= step;
+                    if (s_ramped_target < g_speed_test_target)
+                    {
+                        s_ramped_target = g_speed_test_target;
+                    }
+                }
+                else
+                {
+                    /* 已在目标值，无需调整 */
+                }
+
+                (void)Speed_PID_Update(MOTOR_A, s_ramped_target);
+                (void)Speed_PID_Update(MOTOR_B, s_ramped_target);
+            }
+            break;
+
+        case CTRL_MODE_STOP:
+        default:
+            /*
+             * 停车：直接用 Motor_Brake() 短接电机两端制动，
+             * 不走 PID。
+             *
+             * 为什么不用 Speed_PID_Update(0)：
+             *   PID 的积分项是"历史载荷"的累积。以 15 cm/s 巡航时
+             *   积分可能已经到 20 左右。停车时 Target=0，但
+             *     out = KFF*0 + KP*(-measure) + 积分
+             *         = 0 - 12 + 20 = +8
+             *   仍然是正数，电机继续往前爬 —— 表现就是"发停车命令但车不停"。
+             *
+             *   而且积分分离会"帮倒忙"：停车瞬间误差很大（负数），
+             *   积分分离会冻结积分，残留的正积分长时间不衰减。
+             *
+             * 硬制动不受这些影响：直接把 H 桥下桥臂全开，
+             * 电机绕组短接，靠反电动势制动，立刻停住并保持。
+             */
+            if (s_last_mode != CTRL_MODE_STOP)
+            {
+                /*
+                 * 只在刚进入停车模式时清一次 PID 状态。
+                 * 清完积分和微分历史，下次启动才从干净状态开始，
+                 * 不会带着巡航时的残留量猛冲。
+                 */
+                Speed_PID_Reset(MOTOR_A);
+                Speed_PID_Reset(MOTOR_B);
+            }
+
+            s_ramped_target = 0.0f;
+            Motor_Brake();
+            break;
         }
+
+        s_last_mode = g_ctrl_mode;
 
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(SPEED_PID_PERIOD_MS));
 
@@ -101,13 +175,19 @@ static void ControlTask_Main(void *argument)
         {
             last_outer = now;
 
-#if (CTRL_TASK_ENABLE_MOTION != 0)
-            (void)LinePD_Update(&g_line_pd, &g_gray, &hi2c1);
-#else
-            /* 安全模式：仍然读灰度把数据刷新出来（便于 OLED/调试观察），
-               但把结果丢弃，不驱动电机。 */
-            (void)Gray_Update(&g_gray, &hi2c1);
-#endif
+if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
+            {
+                /* 双环模式：外环算差速并写入内环目标 */
+                (void)LinePD_Update(&g_line_pd, &g_gray, &hi2c1);
+            }
+            else
+            {
+                /*
+                 * 非循迹模式：仍然读灰度刷新数据（便于 OLED/调试观察），
+                 * 但丢弃结果，不驱动电机。
+                 */
+                (void)Gray_Update(&g_gray, &hi2c1);
+            }
 
             fps_counter++;
 
@@ -127,8 +207,8 @@ static void ControlTask_Main(void *argument)
             BLE_UpdateLed();
 
             /* 按键事件分发。
-               KEY1/KEY2 的短按交给 OLED 任务计数（通过计数信号量），
-               长按保留作急停。 */
+               KEY1/KEY2/KEY3 的短按全部交给 OLED 任务做 PID 调参，
+               通过计数信号量传递，避免两次任务调度之间连按丢事件。 */
             {
                 uint32_t key;
                 uint8_t  event;
@@ -137,7 +217,7 @@ static void ControlTask_Main(void *argument)
                 {
                     if (event == KEY_EVENT_PRESS)
                     {
-                        if ((key == KEY_1) || (key == KEY_2))
+                        if ((key == KEY_1) || (key == KEY_2) || (key == KEY_3))
                         {
                             /*
                              * 关键：这里调用 xSemaphoreGive() 把按键"记账"，
@@ -156,9 +236,13 @@ static void ControlTask_Main(void *argument)
                     }
                     else if ((key == KEY_2) && (event == KEY_EVENT_LONG_PRESS))
                     {
-                        /* 长按 KEY2：急停（保留的安全功能） */
-                        Speed_PID_StopAll();
-                        LinePD_Stop(&g_line_pd);
+                        /*
+                         * 长按 KEY2：急停（硬制动）。
+                         *
+                         * 和蓝牙 X 命令走同一个函数，保证两条路径行为一致：
+                         *   切停车模式 + 清 PID 积分 + 立即制动 + 停循迹
+                         */
+                        ControlTask_RequestStop();
                         Led_Off(LED_1);
                     }
                 }
@@ -199,3 +283,59 @@ uint8_t ControlTask_Init(void)
 //
 // Created by JiangyaF on 2026/10/22.
 //
+
+/* ------------------------------------------------------------------------- */
+/* 模式切换接口                                                                */
+/* ------------------------------------------------------------------------- */
+
+void ControlTask_RequestStop(void)
+{
+    /*
+     * 急停的统一入口。蓝牙 X 命令和 KEY2 长按都走这里，
+     * 保证两条路径的停车行为完全一致。
+     *
+     * 四个动作缺一不可：
+     *
+     *   1. 切模式 —— 这是最关键的一步。
+     *      控制任务每 20ms 按 g_ctrl_mode 重新下发指令，
+     *      只清 PID 而不改模式的话，下一拍就会被旧目标覆盖回去。
+     *      改成 STOP 后，控制任务会持续调用 Motor_Brake() 保持制动。
+     *
+     *   2. 清 PID 积分 —— 积分是"历史载荷"的累积量。
+     *      巡航时积分可能已到 20 左右，不清掉的话即使目标为 0，
+     *      out = KP*(-measure) + 积分 仍可能是正数，电机继续往前爬。
+     *
+     *   3. 停循迹 —— 停掉外环 PD，避免它继续往下写目标速度。
+     *
+     *   4. 立即制动 —— 不等内环下一拍（最多 20ms），马上短接电机绕组。
+     *
+     * 说明：本函数可能被蓝牙任务（优先级 2）调用，与控制任务（优先级 3）
+     * 存在极小的并发窗口。但制动是幂等操作（写同样的 GPIO 状态），
+     * 最坏情况只是控制任务下一拍再写一次相同值，没有副作用。
+     */
+    g_ctrl_mode = CTRL_MODE_STOP;
+
+    /*
+     * 目标速度也清零。
+     *
+     * 这是"目标即油门"设计的关键一环：
+     * 急停后目标归零，用户必须重新用 KEY2 把速度一档档加上来，
+     * 不会因为残留的目标值在解除停车时突然窜出去。
+     *
+     * 同时也让屏幕上的 T 值立刻变成 0，视觉反馈明确。
+     */
+    g_speed_test_target = 0.0f;
+
+    Speed_PID_Reset(MOTOR_A);
+    Speed_PID_Reset(MOTOR_B);
+
+    LinePD_Stop(&g_line_pd);
+
+    Motor_Brake();
+}
+
+void ControlTask_RequestSpeedTest(float target_cms)
+{
+    g_speed_test_target = target_cms;
+    g_ctrl_mode         = CTRL_MODE_SPEED_TEST;
+}
