@@ -21,12 +21,45 @@
 #include "Ble_task.h"
 #include "Ble.h"
 #include "Led.h"
+#include "PWM.h"            /* Motor_SetSpeed / Motor_Brake / Motor_Coast */
+#include "Control_task.h"   /* g_motor_manual_mode */
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 /* 串口句柄定义在 main.c 中 */
 extern UART_HandleTypeDef huart2;
+
+/* ------------------------------------------------------------------------- */
+/* 电机测试参数                                                                */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * 每收到一个方向命令，电机通电多久（毫秒）后自动停止。
+ *
+ * 【实测结论】10ms 完全看不到轮子转——齿轮减速电机的静摩擦和
+ *   机械时间常数都需要几十毫秒才能克服，10ms 只会"咔"一声。
+ *   所以默认改成 300ms（能清楚看到转动约 1/3 圈）。
+ *
+ *   调参建议：
+ *     150ms  只转一点点，适合微调
+ *     300ms  默认，能看清方向和幅度
+ *     800ms+ 移动距离明显，注意车会跑远
+ */
+#define MOTOR_TEST_PULSE_MS     300U
+
+/* 测试用的 PWM 占空比（-100 ~ +100）。给 70 兼顾力矩和安全性 */
+#define MOTOR_TEST_SPEED        70
+
+/*
+ * 左右轮映射。
+ *
+ * 如果实车方向是反的（发 W 车倒着走），把这两个宏互换即可：
+ *     #define MOTOR_TEST_LEFT   MOTOR_B
+ *     #define MOTOR_TEST_RIGHT  MOTOR_A
+ */
+#define MOTOR_TEST_LEFT         MOTOR_A
+#define MOTOR_TEST_RIGHT        MOTOR_B
 
 /* ------------------------------------------------------------------------- */
 /* 任务内部状态                                                                */
@@ -69,6 +102,78 @@ static void BleTask_Print(const char *fmt, ...)
 }
 
 /* ------------------------------------------------------------------------- */
+/* 电机测试                                                                    */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * 给左右轮一个短脉冲：通电 MOTOR_TEST_PULSE_MS 毫秒后制动停止。
+ *
+ *   left > 0 : 左轮正转（车前进方向）
+ *   right> 0 : 右轮正转
+ *
+ * 为什么用 Motor_Brake() 而不是 Motor_SetSpeed(0,0)：
+ *   SetSpeed(0,0) 让 H 桥断开，电机滑行，轮子还会惯性转一会儿；
+ *   制动则把电机两端短接，停得干脆，方向判断更清晰。
+ */
+static void Motor_Pulse(int16_t left, int16_t right)
+{
+    /* 先确保上一次的制动状态被解除，再给新方向 */
+    Motor_SetSpeed(left, right);
+
+    vTaskDelay(pdMS_TO_TICKS(MOTOR_TEST_PULSE_MS));
+
+    Motor_Brake();
+}
+
+/*
+ * 处理一个方向命令字符。
+ * 返回 1 = 已识别并执行；0 = 不认识的字符（忽略）。
+ */
+static uint8_t BleTask_HandleMotionCmd(char ch)
+{
+    switch (ch)
+    {
+    case 'W':
+    case 'w':
+        /* 前进：两轮同向正转 */
+        Motor_Pulse(MOTOR_TEST_SPEED, MOTOR_TEST_SPEED);
+        BleTask_Print("W -> forward %ums\r\n", (unsigned int)MOTOR_TEST_PULSE_MS);
+        return 1U;
+
+    case 'S':
+    case 's':
+        /* 后退：两轮同向反转 */
+        Motor_Pulse(-MOTOR_TEST_SPEED, -MOTOR_TEST_SPEED);
+        BleTask_Print("S -> backward %ums\r\n", (unsigned int)MOTOR_TEST_PULSE_MS);
+        return 1U;
+
+    case 'A':
+    case 'a':
+        /* 左转：左轮反转 + 右轮正转 = 原地逆时针旋转 */
+        Motor_Pulse(-MOTOR_TEST_SPEED, MOTOR_TEST_SPEED);
+        BleTask_Print("A -> turn left %ums\r\n", (unsigned int)MOTOR_TEST_PULSE_MS);
+        return 1U;
+
+    case 'D':
+    case 'd':
+        /* 右转：左轮正转 + 右轮反转 = 原地顺时针旋转 */
+        Motor_Pulse(MOTOR_TEST_SPEED, -MOTOR_TEST_SPEED);
+        BleTask_Print("D -> turn right %ums\r\n", (unsigned int)MOTOR_TEST_PULSE_MS);
+        return 1U;
+
+    case 'X':
+    case 'x':
+        /* 急停：立即制动，不脉冲 */
+        Motor_Brake();
+        BleTask_Print("X -> brake\r\n");
+        return 1U;
+
+    default:
+        return 0U;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
 /* 任务主体                                                                    */
 /* ------------------------------------------------------------------------- */
 
@@ -79,8 +184,20 @@ static void BleTask_Main(void *argument)
     /* 让出一次 CPU，确保串口和 LED 初始化完成后再开始打印 */
     vTaskDelay(pdMS_TO_TICKS(100U));
 
+    /*
+     * 进入电机手动模式：让 ControlTask 停止写电机，
+     * 由本任务独占控制。这样 PID 完全停摆，纯测驱动。
+     */
+    Motor_Brake();                  /* 先停稳，避免上电瞬间乱转 */
+    g_motor_manual_mode = 1U;
+
     BleTask_Print("\r\n[BleTask] started, period=%ums\r\n",
                   (unsigned int)BLE_TASK_PERIOD_MS);
+    BleTask_Print("[BleTask] MOTOR TEST MODE (PID disabled)\r\n");
+    BleTask_Print("[BleTask] speed=%d%%  pulse=%ums\r\n",
+                  (int)MOTOR_TEST_SPEED,
+                  (unsigned int)MOTOR_TEST_PULSE_MS);
+    BleTask_Print("[BleTask] W=forward S=backward A=left D=right X=brake\r\n");
 
     /* 同步一次连接状态，避免把"上电时已连接"误报成一次新连接 */
     s_last_connected = BLE_IsConnected();
@@ -88,37 +205,23 @@ static void BleTask_Main(void *argument)
     for (;;)
     {
         /*
-         * ==================================================================
-         * 在这里写你的蓝牙任务逻辑
-         * ==================================================================
+         * ---- 电机测试命令 ----
          *
-         * 可用的接收接口（数据由 USART2 中断填入环形缓冲，这里只是取）：
+         * 按【字节】取，因为 W/S/A/D 都是单字符命令，不需要回车。
+         * 手机 App 如果自动补 \r\n，这两个字符会被 HandleMotionCmd
+         * 忽略（返回 0），不影响功能。
          *
-         *   ---- 按字节取（适合二进制协议或逐字符处理）----
-         *   uint8_t b;
-         *   while (BLE_GetByte(&b) != 0U)
-         *   {
-         *       // 处理每一个字节
-         *   }
-         *
-         *   ---- 按行取（适合手机发 "F50\n" 这类文本命令）----
-         *   char line[64];
-         *   while (BLE_GetLine(line, sizeof(line)) != 0U)
-         *   {
-         *       // line 已去掉结尾的 \r 或 \n
-         *   }
-         *
-         * 可用的发送接口：
-         *   BLE_SendString("hello\r\n");
-         *   BLE_Send(buf, len);
-         *   BLE_SendByte('A');
-         *
-         * 提示：如果想做"手机发什么就回什么"的环回测试，最简单的写法是
-         *      uint8_t b;
-         *      while (BLE_GetByte(&b) != 0U) { BLE_SendByte(b); }
-         *      但注意环回会把手机发来的命令也原样回显，正式逻辑里不要保留。
-         * ==================================================================
+         * 每个命令产生一个 MOTOR_TEST_PULSE_MS 的短脉冲后自动制动，
+         * 所以车不会一直跑——适合台面测试方向。
          */
+        {
+            uint8_t b;
+
+            while (BLE_GetByte(&b) != 0U)
+            {
+                (void)BleTask_HandleMotionCmd((char)b);
+            }
+        }
 
         /* ---- 连接状态变化：更新 LED 并提示 ---- */
         {
@@ -133,6 +236,7 @@ static void BleTask_Main(void *argument)
                     s_connect_count++;
                     BleTask_Print("[BLE] connected (times=%lu)\r\n",
                                   (unsigned long)s_connect_count);
+                    BleTask_Print("[BLE] send W/S/A/D to drive the car\r\n");
                 }
                 else
                 {

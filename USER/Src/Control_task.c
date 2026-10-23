@@ -35,6 +35,12 @@ extern I2C_HandleTypeDef hi2c1;
 
 static TaskHandle_t s_task_handle = NULL;
 
+/*
+ * 电机手动模式标志（详见 Control_task.h 的说明）。
+ * 上电默认 0 = 正常 PID 控制。
+ */
+volatile uint8_t g_motor_manual_mode = 0U;
+
 /* ------------------------------------------------------------------------- */
 /* 任务主体                                                                    */
 /* ------------------------------------------------------------------------- */
@@ -72,11 +78,19 @@ static void ControlTask_Main(void *argument)
              * 导致积分步长翻倍。
              */
         }
-        else
+        else if (g_motor_manual_mode == 0U)
         {
             /* 安全模式：目标速度锁 0，电机保持停止 */
             Speed_PID_Update(MOTOR_A, 0.0f);
             Speed_PID_Update(MOTOR_B, 0.0f);
+        }
+        else
+        {
+            /*
+             * 手动模式：完全不碰电机。
+             * 这里不能调用 Speed_PID_Update，否则 PID 会把电机拉回 0，
+             * 覆盖蓝牙任务设置的转速。
+             */
         }
 
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(SPEED_PID_PERIOD_MS));

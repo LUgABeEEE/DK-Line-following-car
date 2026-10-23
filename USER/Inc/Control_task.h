@@ -57,6 +57,23 @@
  */
 #define CTRL_TASK_ENABLE_MOTION     0
 
+/*
+ * 电机"手动模式"标志。
+ *
+ * 背景：
+ *   ControlTask 每 20ms 会调用 Speed_PID_Update(MOTOR_x, 0.0f) 把电机
+ *   拉回停止。如果蓝牙任务同时用 Motor_SetSpeed() 直接驱动电机，
+ *   两者会互相覆盖，表现为"电机抖动/一顿一顿"。
+ *
+ * 用法：
+ *   g_motor_manual_mode = 1  -> ControlTask 完全不碰电机（PID 停摆），
+ *                               由蓝牙任务独占控制
+ *   g_motor_manual_mode = 0  -> 恢复正常的 PID/循迹控制
+ *
+ * 定义在 Control_task.c 中。
+ */
+extern volatile uint8_t g_motor_manual_mode;
+
 /* ------------------------------------------------------------------------- */
 /* 接口                                                                        */
 /* ------------------------------------------------------------------------- */

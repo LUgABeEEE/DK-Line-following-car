@@ -43,6 +43,34 @@ static const Motor_Hw_t s_motor[] =
 #define MOTOR_COUNT     (sizeof(s_motor) / sizeof(s_motor[0]))
 
 /* ------------------------------------------------------------------------- */
+/* 电机方向修正                                                                */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * 每个电机的方向系数。
+ *
+ *   +1 = 正常（正的 duty -> 车轮朝"前进"方向转）
+ *   -1 = 反了（电机两根线接反，或机械装配方向相反）
+ *
+ * 【必须在这里改，不要在调用处改】
+ *
+ * 原因：所有上层模块都通过 Motor_SetSpeed() 驱动电机——
+ *   速度 PID、循迹 PD、蓝牙遥控、自检，无一例外。
+ *   在这里统一取反，等于给"电机正方向"重新下定义，
+ *   全系统自动保持一致。
+ *
+ * ⚠️ 如果只在某个调用处（比如蓝牙测试）取反，会埋下两个隐患：
+ *   1. 速度环正反馈：
+ *        目标 +70 -> 实际转 -70 -> 编码器读 -70
+ *        -> 误差 = 70-(-70) = 140 -> PID 加大输出 -> 失控
+ *   2. 循迹 PD 的左右差速方向颠倒：想左转实际右转
+ *
+ * 当前设置依据：A 号电机接线反了 -> A 取 -1。
+ */
+#define MOTOR_A_DIR_SIGN    (-1)
+#define MOTOR_B_DIR_SIGN    (+1)
+
+/* ------------------------------------------------------------------------- */
 /* 内部函数                                                                    */
 /* ------------------------------------------------------------------------- */
 
@@ -111,17 +139,31 @@ void Motor_Init(void)
 
 void Motor_SetSpeed(int16_t duty_a, int16_t duty_b)
 {
-    Motor_Drive(&s_motor[MOTOR_A], Motor_Clamp(duty_a));
-    Motor_Drive(&s_motor[MOTOR_B], Motor_Clamp(duty_b));
+    /*
+     * 先限幅再加方向系数：
+     * 限幅保证数值在 ±MOTOR_DUTY_MAX 内，乘 -1 不会溢出 int16_t。
+     */
+    Motor_Drive(&s_motor[MOTOR_A],
+                (int16_t)(Motor_Clamp(duty_a) * MOTOR_A_DIR_SIGN));
+    Motor_Drive(&s_motor[MOTOR_B],
+                (int16_t)(Motor_Clamp(duty_b) * MOTOR_B_DIR_SIGN));
 }
 
 void Motor_SetOne(uint32_t motor, int16_t duty)
 {
+    int16_t sign;
+    int16_t clamped;
+
     if (motor >= MOTOR_COUNT)
     {
         return;
     }
-    Motor_Drive(&s_motor[motor], Motor_Clamp(duty));
+
+    /* 按电机编号取对应的方向系数 */
+    sign = (motor == MOTOR_A) ? MOTOR_A_DIR_SIGN : MOTOR_B_DIR_SIGN;
+
+    clamped = Motor_Clamp(duty);
+    Motor_Drive(&s_motor[motor], (int16_t)(clamped * sign));
 }
 
 void Motor_Brake(void)

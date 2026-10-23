@@ -150,6 +150,41 @@ void Encoder_ResetFilter(uint32_t encoder)
     s_speed_cms[encoder] = 0.0f;
 }
 
+/* ------------------------------------------------------------------------- */
+/* 编码器方向修正                                                              */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * 每个编码器的计数方向系数。
+ *
+ *   +1 = 上车轮朝"前进"方向转时，计数为正
+ *   -1 = 反之（编码器 A/B 相接反，或装配方向相反）
+ *
+ * 【什么时候需要改】
+ *   把 PWM.c 的 MOTOR_x_DIR_SIGN 修正正确之后，用手向前推车：
+ *     - 速度读数为正  -> 不用改，保持 +1
+ *     - 速度读数为负  -> 把对应通道改成 -1
+ *
+ * 【为什么必须和电机方向一致】
+ *   速度 PID 是闭环：误差 = 目标 - 实测。
+ *   如果电机已修正为"正向"，但编码器仍读负，那么：
+ *     目标 +70 -> 实际转 +70 -> 编码器读 -70
+ *     -> 误差 = 140 -> PID 加大输出 -> 转得更快 -> 误差更大 -> 失控
+ *   所以确认电机方向后，一定要再验证一遍编码器方向。
+ *
+ * 当前设置：电机 A 的接线问题已在 PWM.c 里修正，编码器默认 +1，
+ *          待实测确认。
+ */
+#define ENCODER_A_DIR_SIGN    (+1)
+#define ENCODER_B_DIR_SIGN    (+1)
+
+/* 取某个编码器的方向系数 */
+static int32_t Encoder_DirSign(uint32_t index)
+{
+    return (index == ENCODER_A) ? (int32_t)ENCODER_A_DIR_SIGN
+                                : (int32_t)ENCODER_B_DIR_SIGN;
+}
+
 void Encoder_UpdateSpeed(void)
 {
     uint32_t i;
@@ -163,6 +198,9 @@ void Encoder_UpdateSpeed(void)
 
         /* ReadDelta 内部已关中断，这里不需要再保护 */
         d = (int32_t)Encoder_ReadDelta(i);
+
+        /* 应用编码器方向系数，保证"正数 = 车轮前进" */
+        d *= Encoder_DirSign(i);
 
         /* 用实际经过的时间做分母，比假定固定周期更稳，也能自动适应调用抖动 */
         dt_ms = now_tick - s_last_tick[i];
