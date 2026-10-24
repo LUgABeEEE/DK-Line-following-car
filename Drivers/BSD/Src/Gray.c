@@ -25,7 +25,26 @@ extern UART_HandleTypeDef huart2;
 /* 模块内部状态                                                                */
 /* ------------------------------------------------------------------------- */
 
-/* 线条明暗关系。1 = 线比背景亮（黑底白线），0 = 线比背景暗（白底黑线） */
+/*
+ * 线条明暗关系。1 = 线比背景亮（黑底白线），0 = 线比背景暗（白底黑线）
+ *
+ * 【当前赛道：白底黑线 -> GRAY_LINE_IS_DARK】
+ *
+ * 注意：本模块的【模拟值方向】和手册描述相反！
+ *   手册写"收到光越强、灰度值越高、越接近白色"，
+ *   但实测（8 路模拟值）是：
+ *     白色背景   -> A ≈ 2950（低）
+ *     黑色线条   -> A ≈ 3900（高）
+ *   也就是说这个模块输出的是"暗度"：越黑数值越大。
+ *
+ *   状态位 channel[i] 的判定也是 A > 阈值 时置 1，
+ *   所以"线 = 数值高 = 状态位为 1"是自洽的。
+ *
+ * 【但位置解算已经不再依赖这个配置】
+ *   第 5 步的质心计算现在用【状态位做门控 + |模拟值-阈值| 做权重】，
+ *   取了绝对值，所以白底黑线 / 黑底白线都能正确工作。
+ *   这个宏目前只影响自检打印里的文字描述。
+ */
 static uint8_t s_line_is_bright = GRAY_LINE_IS_DARK;
 
 /* 上一次有效的线位置，用于丢线时保持方向 */
@@ -122,7 +141,6 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
     uint8_t raw_state = 0U;
     float   weighted = 0.0f;
     float   weight_sum = 0.0f;
-    float   polarity;
     uint32_t i;
 
     if (sensor == NULL)
@@ -130,10 +148,14 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
         return 1U;
     }
 
+    /* 累计计数：每次进入都算一次读取尝试，用于统计长期错误率 */
+    sensor->total_reads++;
+
     /* ---------- 1. 读数字状态（寄存器 5，1 字节） ---------- */
     if (Gray_ReadRegisters(hi2c, GRAY_REG_STATE, &raw_state, 1U) == 0U)
     {
         sensor->fail_count++;
+        sensor->total_fails++;
         sensor->line_valid = 0U;
         return (sensor->fail_count >= GRAY_FAIL_LIMIT) ? 2U : 1U;
     }
@@ -142,6 +164,7 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
     if (Gray_ReadRegisters(hi2c, GRAY_REG_ANALOG_CH1, raw_analog, sizeof(raw_analog)) == 0U)
     {
         sensor->fail_count++;
+        sensor->total_fails++;
         sensor->line_valid = 0U;
         return (sensor->fail_count >= GRAY_FAIL_LIMIT) ? 2U : 1U;
     }
@@ -170,36 +193,48 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
         }
     }
 
-    /* ---------- 5. 逐个通道归一化并累加，求加权质心 ---------- */
-    polarity  = (s_line_is_bright != 0U) ? -1.0f : 1.0f;
-
+    /* ---------- 5. 逐通道求权重，累加求加权质心 ---------- */
+    /*
+     * 权重的来源分两层：
+     *
+     *   【门控】用传感器自己的数字状态位 channel[i] 判断"这一路是否看到线"。
+     *
+     *     模块内部有完整的自学习阈值和滤波，它给出的状态位比我们
+     *     拿模拟值和阈值硬比较要可靠得多（实测：5 个位置全部判断正确）。
+     *     而且阈值放得偏高偏低时，模块自己仍然能正确判定。
+     *
+     *   【加权】用"模拟值偏离阈值多远"做亚像素权重。
+     *
+     *     线正压在某一路上时偏差大，压在两个通道中间时两边偏差都小，
+     *     加权平均就能得到比 8 路更细的位置分辨率。
+     *     取绝对值，这样白底黑线和黑底白线都能用，不必再区分极性。
+     *
+     * 之前用 (A-T)/T × 极性的做法有两个问题：
+     *   1. 极性容易搞反（曾经反过一次，导致把背景当线）
+     *   2. 阈值一旦偏得厉害，归一化值只剩 0.05 量级，
+     *      两路加起来刚到丢线门限，稍微一动就误判丢线
+     */
     for (i = 0U; i < GRAY_CHANNEL_COUNT; i++)
     {
         float v = 0.0f;
         float pos_mm;
 
-        if (sensor->threshold_loaded != 0U)
+        if (sensor->channel[i] != 0U)
         {
-            float threshold = (float)sensor->threshold[i];
-            float denominator;
+            float diff = (float)sensor->analog[i] - (float)sensor->threshold[i];
 
-            if (threshold < 1.0f)
+            /* 取绝对值：线比背景亮或暗都适用，不再依赖极性配置 */
+            if (diff < 0.0f)
             {
-                threshold = 1.0f;       /* 防止除零 */
+                diff = -diff;
             }
 
             /*
-             * 分母取绝对值，这样无论线条比背景暗还是亮，
-             * 归一化结果都被统一到"看到线 -> 正值"这个约定上。
+             * 除以 1000 只是为了让 strength 的数值落在 0~3 这种好读的范围：
+             * 实测偏差约 90~340，除以 1000 后单路权重 0.09~0.34，
+             * 两路在线时总和约 0.4，远高于 GRAY_STRENGTH_MIN(0.10)。
              */
-            denominator = (threshold > 0.0f) ? threshold : 1.0f;
-            v = ((float)sensor->analog[i] - threshold) / denominator * polarity;
-
-            /* 置负：没看到线的通道不参与质心，避免背景噪声把位置拉偏 */
-            if (v < 0.0f)
-            {
-                v = 0.0f;
-            }
+            v = diff / 1000.0f;
         }
 
         pos_mm  = ((float)i - (float)(GRAY_CHANNEL_COUNT - 1U) * 0.5f) * GRAY_CHANNEL_PITCH_MM;
@@ -212,7 +247,7 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
     sensor->strength = weight_sum;
 
     /* ---------- 6. 判定位置有效性 / 丢线 ---------- */
-    if (weight_sum < 0.5f)
+    if (weight_sum < GRAY_STRENGTH_MIN)
     {
         /*
          * 所有通道都看不到线 = 丢线。
@@ -276,6 +311,79 @@ uint8_t Gray_IsCentered(const Gray_Sensor_t *sensor, float tolerance_cm)
 /* ------------------------------------------------------------------------- */
 /* 自检                                                                        */
 /* ------------------------------------------------------------------------- */
+
+/* ------------------------------------------------------------------------- */
+/* I2C 总线恢复                                                                */
+/* ------------------------------------------------------------------------- */
+
+void Gray_BusRecovery(I2C_HandleTypeDef *hi2c)
+{
+    GPIO_InitTypeDef gpio = {0};
+    uint32_t i;
+
+    if (hi2c == NULL)
+    {
+        return;
+    }
+
+    /*
+     * 1. 释放 I2C 外设。
+     *    DeInit 会把 PB8/PB9 从 AF 模式解绑（走 HAL_I2C_MspDeInit），
+     *    同时关掉 I2C1 时钟。
+     */
+    (void)HAL_I2C_DeInit(hi2c);
+
+    /*
+     * 2. 把 SCL、SDA 都配成【开漏输出 + 上拉】的普通 GPIO。
+     *    开漏是关键：这样我们既能主动拉低，也能在读的时候被
+     *    外部上拉拉高，不会和从机抢总线。
+     */
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    gpio.Pin   = GS_SCL_Pin | GS_SDA_Pin;
+    gpio.Mode  = GPIO_MODE_OUTPUT_OD;
+    gpio.Pull  = GPIO_PULLUP;
+    gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GS_SCL_GPIO_Port, &gpio);
+
+    /* 3. 先都置高，让总线回到空闲电平 */
+    HAL_GPIO_WritePin(GS_SCL_GPIO_Port, GS_SCL_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GS_SDA_GPIO_Port, GS_SDA_Pin, GPIO_PIN_SET);
+    HAL_Delay(2U);
+
+    /*
+     * 4. 打 9 个 SCL 时钟。
+     *    从机若卡在某个数据位，最多 8 个时钟就能把它送完；
+     *    第 9 个是保险，确保它进入"等待 STOP"的状态。
+     */
+    for (i = 0U; i < 9U; i++)
+    {
+        HAL_GPIO_WritePin(GS_SCL_GPIO_Port, GS_SCL_Pin, GPIO_PIN_RESET);
+        HAL_Delay(1U);
+        HAL_GPIO_WritePin(GS_SCL_GPIO_Port, GS_SCL_Pin, GPIO_PIN_SET);
+        HAL_Delay(1U);
+    }
+
+    /*
+     * 5. 手工产生 STOP 条件：SCL 为高时，SDA 由低变高。
+     *    从机看到 STOP 就会释放 SDA 线。
+     */
+    HAL_GPIO_WritePin(GS_SCL_GPIO_Port, GS_SCL_Pin, GPIO_PIN_RESET);
+    HAL_Delay(1U);
+    HAL_GPIO_WritePin(GS_SDA_GPIO_Port, GS_SDA_Pin, GPIO_PIN_RESET);
+    HAL_Delay(1U);
+    HAL_GPIO_WritePin(GS_SCL_GPIO_Port, GS_SCL_Pin, GPIO_PIN_SET);
+    HAL_Delay(1U);
+    HAL_GPIO_WritePin(GS_SDA_GPIO_Port, GS_SDA_Pin, GPIO_PIN_SET);
+    HAL_Delay(1U);
+
+    /*
+     * 6. 重新初始化 I2C。
+     *    HAL_I2C_Init 会调用 MspInit，把 PB8/PB9 重新配成 AF_OD，
+     *    并打开 I2C1 时钟。
+     */
+    (void)HAL_I2C_Init(hi2c);
+}
 
 void Gray_TestSequence(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
 {

@@ -94,7 +94,23 @@ typedef struct
  *   正常巡航 15~30 cm/s，稳态误差通常 < 1 cm/s，
  *   起步瞬间误差可达 15~30 cm/s，8 能把两者清楚分开。
  */
-#define SPEED_PID_INTEGRAL_SEPARATION_CMS   8.0f
+/*
+ * 积分分离阈值。
+ *
+ * 误差大于等于这个值时暂停积分，用来防止起步/堵转时的积分饱和。
+ *
+ * 【从 8.0 放宽到 20.0 的原因】
+ *   实测（GEAR_RATIO 修正后）：目标 25.9 cm/s，实测只有 15.0，
+ *   稳态误差 10.9 —— 比 8.0 大，于是积分【永远不工作】，
+ *   这个 10.9 的偏差就再也消除不掉了。
+ *
+ *   现在有了起步斜坡（SPEED_RAMP_CMS_PER_SEC / LINE_SPEED_RAMP），
+ *   启动瞬间的误差本来就不大，不需要靠积分分离来防饱和，
+ *   阈值放宽到 20 既能允许正常调速时的积分，又不至于一路饱和。
+ *
+ * 如果调速时发现起步冲得厉害，再适当调小。
+ */
+#define SPEED_PID_INTEGRAL_SEPARATION_CMS   20.0f
 
 /*
  * 积分项限幅相对输出上限的比例。
@@ -142,6 +158,35 @@ void Speed_PID_SetGains(uint32_t motor, float kp, float ki, float kd, float kff)
 #define SPEED_PID_GAIN_KFF      3U
 #define SPEED_PID_GAIN_COUNT    4U
 
+/* ========================================================================= */
+/* 编码器故障应急开关                                                          */
+/* ========================================================================= */
+
+/*
+ * 某路编码器坏了（示波器无方波、m 恒为 0）时的应急处理。
+ *
+ * 【为什么需要】
+ *   正常时速度环的输出是：
+ *       o = KFF×target + KP×(target - measure) + 积分
+ *   编码器坏了 measure 恒等于 0，于是：
+ *       o = KFF×target + KP×target = (KFF + KP) × target
+ *   默认 KFF=1.0、KP=0.8，实际占空比是目标的 1.8 倍 —— 车会窜。
+ *   而且目标越大偏差越大，完全没有比例关系。
+ *
+ *   把对应位置 1 后，该轮只用前馈：
+ *       o = KFF×target
+ *   相当于把 PID 退化成"占空比 ∝ 目标速度"的开环控制。
+ *   精度差（电池电压下降会变慢），但至少是线性的、能跑。
+ *
+ * 【怎么用】
+ *   1 = 该轮编码器故障，走开环
+ *   0 = 正常，走闭环
+ *
+ * 修好编码器后记得改回 0。
+ */
+#define SPEED_PID_OPENLOOP_A    0
+#define SPEED_PID_OPENLOOP_B    0
+
 /*
  * 读取某个增益。motor 传 MOTOR_A 或 MOTOR_B。
  * 越界参数返回 0.0f。
@@ -184,6 +229,12 @@ float Speed_PID_Update(uint32_t motor, float target);
 float Speed_PID_GetTarget(uint32_t motor);
 float Speed_PID_GetMeasure(uint32_t motor);
 float Speed_PID_GetOutput(uint32_t motor);
+
+/*
+ * 读取当前积分项（已计入输出，单位 = PWM 占空比）。
+ * 调试时用来看积分是否饱和、是否有残留。
+ */
+float Speed_PID_GetIntegral(uint32_t motor);
 
 /* 立即停止该轮：清积分、清输出，并让该轮滑行。 */
 void Speed_PID_Stop(uint32_t motor);

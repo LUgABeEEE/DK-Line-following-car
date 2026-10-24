@@ -80,6 +80,31 @@ static void ControlTask_Main(void *argument)
     {
         TickType_t now;
 
+        /*
+         * 模式切换的一次性处理。
+         *
+         * 只处理"刚切过来"这一拍，之后 s_last_mode 就更新了。
+         */
+        if (g_ctrl_mode != s_last_mode)
+        {
+            if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
+            {
+                /*
+                 * 刚进入循迹：清外环历史。
+                 *
+                 * 为什么必须清：外环的微分项是 (error - last_error)/dt。
+                 * 如果从 SPEED_TEST 直接切过来，last_error 还停在上次
+                 * 循迹结束时的旧值，first_run 也已经是 0，
+                 * 那么第一拍会算出一个巨大的微分 ——
+                 * steer 瞬间打满差速，车会猛打一下方向。
+                 *
+                 * LinePD_Reset 会把 first_run 重新置 1，
+                 * 下一拍走"首拍不做微分"的保护分支。
+                 */
+                LinePD_Reset(&g_line_pd);
+            }
+        }
+
         /* ================= 节拍 1：内环速度环，20ms ================= */
         Encoder_UpdateSpeed();
 
@@ -87,10 +112,21 @@ static void ControlTask_Main(void *argument)
         {
         case CTRL_MODE_LINE_FOLLOW:
             /*
-             * 双环模式：外环 LinePD_Update（在外环节拍里）会调用
-             * Speed_PID_Update 把左右轮目标写进内环。
-             * 这里不能重复调用，否则一周期跑两次 PID，积分步长翻倍。
+             * 双环模式：外环只负责"算目标"，这里负责"跟目标"。
+             *
+             * 外环 LinePD_Update 每 100ms 跑一次，把左右轮目标速度
+             * 写进 g_line_pd.left_target / right_target；
+             * 内环在这里以 20ms 的节奏持续追踪这两个目标。
+             *
+             * 两个环各跑各的周期，互不牵制：
+             *   内环 50Hz —— 保证轮速跟得上
+             *   外环 10Hz —— 保证转向指令有足够带宽
+             *
+             * （以前外环里直接调 Speed_PID_Update，导致速度环也被
+             *   拖到 10Hz，轮子跟不上目标，循迹只要有一点弯就跟不住。）
              */
+            (void)Speed_PID_Update(MOTOR_A, g_line_pd.left_target);
+            (void)Speed_PID_Update(MOTOR_B, g_line_pd.right_target);
             break;
 
         case CTRL_MODE_SPEED_TEST:
@@ -329,7 +365,23 @@ void ControlTask_RequestStop(void)
     Speed_PID_Reset(MOTOR_A);
     Speed_PID_Reset(MOTOR_B);
 
+    /*
+     * 清掉编码器的速度滤波状态。
+     *
+     * Encoder_UpdateSpeed 里对速度做了一阶低通，s_speed_cms[] 会保留
+     * 停车前的值。不清的话，重新启动后的头几拍测速会带着这个旧值，
+     * PID 看到的"实测速度"是错的，起步会顿一下。
+     *
+     * 用 Encoder_ResetFilter 而不是 Encoder_Reset：
+     *   后者会把计数和累计里程也清零，而我们只想清滤波状态。
+     */
+    Encoder_ResetFilter(ENCODER_A);
+    Encoder_ResetFilter(ENCODER_B);
+
     LinePD_Stop(&g_line_pd);
+
+    /* 斜坡值也归零，下次启动从 0 平滑爬升 */
+    s_ramped_target = 0.0f;
 
     Motor_Brake();
 }

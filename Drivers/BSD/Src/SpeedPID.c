@@ -204,6 +204,38 @@ float Speed_PID_Update(uint32_t motor, float target)
     /* ---------- 3. 偏差 ---------- */
     error = target - pid->measure;
 
+    /*
+     * 编码器故障应急：该轮只走前馈，跳过 P/I/D。
+     * 详见 SpeedPID.h 里 SPEED_PID_OPENLOOP_x 的说明。
+     */
+    {
+        uint32_t openloop = 0U;
+
+#if (SPEED_PID_OPENLOOP_A != 0)
+        if (motor == MOTOR_A)
+        {
+            openloop = 1U;
+        }
+#endif
+#if (SPEED_PID_OPENLOOP_B != 0)
+        if (motor == MOTOR_B)
+        {
+            openloop = 1U;
+        }
+#endif
+
+        if (openloop != 0U)
+        {
+            out = pid->kff * target;
+            out = (out > SPEED_OUTPUT_LIMIT) ? SPEED_OUTPUT_LIMIT : out;
+            out = (out < -SPEED_OUTPUT_LIMIT) ? -SPEED_OUTPUT_LIMIT : out;
+            pid->integral = 0.0f;
+            pid->output   = out;
+            Motor_SetOne(motor, out);
+            return out;
+        }
+    }
+
     /* ---------- 4. 微分项：误差的变化率，带低通滤波 ---------- */
     if (s_last_error_valid[motor] == 0U)
     {
@@ -309,6 +341,12 @@ float Speed_PID_GetOutput(uint32_t motor)
 {
     Speed_PID_t *pid = Speed_PID_Get(motor);
     return (pid == NULL) ? 0.0f : pid->output;
+}
+
+float Speed_PID_GetIntegral(uint32_t motor)
+{
+    Speed_PID_t *pid = Speed_PID_Get(motor);
+    return (pid == NULL) ? 0.0f : pid->integral;
 }
 
 void Speed_PID_Stop(uint32_t motor)

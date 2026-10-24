@@ -23,6 +23,7 @@
 #include "SpeedPID.h"
 #include "Encoder.h"
 #include "Gray.h"
+#include "LinePD.h"
 #include "Control_task.h"
 #include <stdio.h>
 #include <string.h>
@@ -39,6 +40,9 @@ extern UART_HandleTypeDef huart2;
 
 /* 灰度传感器实例定义在 main.c 中，传感器调试页只读它 */
 extern Gray_Sensor_t g_gray;
+
+/* 外环实例定义在 main.c 中，MODE 页要显示它的基础速度 */
+extern Line_PD_t g_line_pd;
 
 /* ------------------------------------------------------------------------- */
 /* 可调参数表                                                                  */
@@ -68,7 +72,11 @@ typedef struct
 #define TUNE_IDX_TARGET     4U
 #define TUNE_IDX_ENCA       5U
 #define TUNE_IDX_SENSOR     6U
-#define TUNE_PARAM_COUNT    7U
+#define TUNE_IDX_MODE       7U
+#define TUNE_IDX_LKP        8U
+#define TUNE_IDX_LKD        9U
+#define TUNE_IDX_LBAS       10U
+#define TUNE_PARAM_COUNT    11U
 
 static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
 {
@@ -94,6 +102,28 @@ static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
      * 页面内容在 DrawSensorPage() 里单独绘制。
      */
     { "LINE",    0.000f,  0.00f,  0.00f },
+    /*
+     * MODE: 运行模式切换页。不是数值参数，KEY1/KEY2 用来循环切换
+     * STOP -> SPD -> LINE。页面在 DrawModePage() 里单独绘制。
+     */
+    { "MODE",    1.000f,  0.00f,  2.00f },
+
+    /*
+     * ---- 外环（循迹 PD）参数 ----
+     *
+     * LKP : 比例增益，单位 cm/s 差速量 每 cm 误差
+     *       步长 0.5 —— 实测范围大约 6~15，0.5 已经是 3%~8%，够细
+     *       范围上限 30 是安全值，再大一定画龙
+     *
+     * LKD : 微分增益，抑制过弯回摆
+     *       步长 0.1 —— 典型值 0~6，0.1 足够
+     *
+     * LBAS: 循迹基础速度，单位 cm/s
+     *       步长 1.0 —— 1 cm/s 一档最直观
+     */
+    { "LKP",     0.50f,   0.00f, 30.00f },
+    { "LKD",     0.10f,   0.00f, 20.00f },
+    { "LBAS",    1.00f,   0.00f, 50.00f },
 };
 
 /* ------------------------------------------------------------------------- */
@@ -164,6 +194,25 @@ static float OledTask_ReadParam(uint8_t idx)
         return Encoder_GetFix(ENCODER_A);
     }
 
+    if (idx == TUNE_IDX_MODE)
+    {
+        return (float)g_ctrl_mode;
+    }
+
+    /* ---- 外环参数直接读写 g_line_pd ---- */
+    if (idx == TUNE_IDX_LKP)
+    {
+        return g_line_pd.kp;
+    }
+    if (idx == TUNE_IDX_LKD)
+    {
+        return g_line_pd.kd;
+    }
+    if (idx == TUNE_IDX_LBAS)
+    {
+        return g_line_pd.base_speed;
+    }
+
     /* 左右轮参数始终同步，读 A 的就行 */
     return Speed_PID_GetGain(MOTOR_A, idx);
 }
@@ -220,6 +269,52 @@ static void OledTask_WriteParam(uint8_t idx, float value)
     {
         /* 分轮标定：只改 A，B 保持 1.0 作为基准 */
         Encoder_SetFix(ENCODER_A, value);
+        return;
+    }
+
+    /* ---- 外环（循迹 PD）参数：直接写 g_line_pd ---- */
+    if (idx == TUNE_IDX_LKP)
+    {
+        g_line_pd.kp = value;
+        return;
+    }
+
+    if (idx == TUNE_IDX_LKD)
+    {
+        g_line_pd.kd = value;
+        return;
+    }
+
+    if (idx == TUNE_IDX_LBAS)
+    {
+        /*
+         * 基础速度。同时更新 g_speed_test_target，
+         * 这样从 LINE 切回 SPEED TEST 时两个速度是一致的，不会突然变速。
+         */
+        g_line_pd.base_speed  = value;
+        g_speed_test_target   = value;
+        return;
+    }
+
+    if (idx == TUNE_IDX_MODE)
+    {
+        /*
+         * 模式切换。value 已被限幅到 [0, 2]，正好对应
+         * CTRL_MODE_STOP / SPEED_TEST / LINE_FOLLOW。
+         *
+         * 切到 STOP 时要把目标速度也清零，否则下次进 SPEED_TEST
+         * 会因为残留目标突然窜出去。
+         */
+        uint8_t new_mode = (uint8_t)value;
+
+        if (new_mode == CTRL_MODE_STOP)
+        {
+            ControlTask_RequestStop();
+        }
+        else
+        {
+            g_ctrl_mode = new_mode;
+        }
         return;
     }
 
@@ -412,13 +507,96 @@ static void OledTask_DrawSensorPage(void)
     }
 
     /* ---- 第 5 行：信号强度 + 丢线标志 ---- */
+    /* 强度放大 100 倍：0.76 显示成 76，否则整数截断后永远是 0 */
     (void)snprintf(line, sizeof(line), "str %ld L:%u",
-                   (long)g_gray.strength,
+                   (long)(g_gray.strength * 100.0f),
                    (unsigned int)g_gray.line_lost);
     OLED_ShowString(0U, 46U, line, OLED_FONT_6X8, OLED_WHITE);
 
-    /* ---- 第 6 行：提示 ---- */
-    OLED_ShowString(0U, 56U, "K3:next page", OLED_FONT_6X8, OLED_WHITE);
+    /*
+     * ---- 第 6 行：I2C 健康度 + 翻页提示 ----
+     *
+     * e<失败次数>/<总读取次数>
+     *   这是判断"电源反接有没有留下后遗症"的关键指标：
+     *   跑一段时间后如果 e 一直是 0，说明模块和走线都健康；
+     *   如果 e 在涨，说明有接触不良或器件受损。
+     */
+    (void)snprintf(line, sizeof(line), "e%lu/%lu K3:next",
+                   (unsigned long)g_gray.total_fails,
+                   (unsigned long)g_gray.total_reads);
+    OLED_ShowString(0U, 56U, line, OLED_FONT_6X8, OLED_WHITE);
+
+    (void)OLED_Refresh();
+}
+
+/*
+ * 运行模式切换页。
+ *
+ * KEY1 / KEY2 循环切换三种模式：
+ *   STOP  停车（硬制动）
+ *   SPD   只跑内环，两轮追踪 g_speed_test_target
+ *   LINE  双环循迹（外环读灰度算差速 + 内环速度闭环）
+ *
+ * ⚠️ 切到 LINE 车会立刻按基础速度跑起来，确保车已经在赛道上方。
+ */
+static void OledTask_DrawModePage(void)
+{
+    char        line[28];
+    const char *mode_str;
+    const char *hint;
+
+    switch (g_ctrl_mode)
+    {
+    case CTRL_MODE_SPEED_TEST:
+        mode_str = "SPEED TEST";
+        hint     = "inner loop only";
+        break;
+
+    case CTRL_MODE_LINE_FOLLOW:
+        mode_str = "LINE FOLLOW";
+        hint     = "outer+inner loop";
+        break;
+
+    case CTRL_MODE_STOP:
+    default:
+        mode_str = "STOP";
+        hint     = "brake held";
+        break;
+    }
+
+    OLED_Clear();
+
+    OLED_ShowString(0U, 0U, "RUN MODE", OLED_FONT_8X16, OLED_WHITE);
+    OLED_ShowString(0U, 18U, mode_str, OLED_FONT_8X16, OLED_WHITE);
+    OLED_ShowString(0U, 36U, hint, OLED_FONT_6X8, OLED_WHITE);
+
+    /*
+     * 实时显示外环的中间量和输出。
+     *
+     * 这一页是排查"循迹方向/增益是否真的生效"的关键：
+     *   L / R  : 外环算出的左右轮目标速度（cm/s）
+     *            LKP=LKD=0 时这两个数必须【完全相等】，
+     *            如果不等，说明增益没写进去或者还有别的转向来源。
+     *   e      : 当前误差（cm），左正右负
+     *   s      : 当前差速量 steer（cm/s）
+     *
+     * 通过 L 和 R 的大小关系，可以直接判断转向方向对不对，
+     * 不用让车跑起来。
+     */
+    {
+        char b1[10];
+        char b2[10];
+
+        (void)snprintf(line, sizeof(line), "L%s R%s",
+                       OledTask_FmtFloat(b1, sizeof(b1), g_line_pd.left_target, 1U),
+                       OledTask_FmtFloat(b2, sizeof(b2), g_line_pd.right_target, 1U));
+        OLED_ShowString(0U, 46U, line, OLED_FONT_6X8, OLED_WHITE);
+
+        (void)snprintf(line, sizeof(line), "e%s s%s",
+                       OledTask_FmtFloat(b1, sizeof(b1), g_line_pd.error, 1U),
+                       OledTask_FmtFloat(b2, sizeof(b2), g_line_pd.steer, 1U));
+        OLED_ShowString(0U, 56U, line, OLED_FONT_6X8, OLED_WHITE);
+    }
 
     (void)OLED_Refresh();
 }
@@ -432,6 +610,13 @@ static void OledTask_Draw(void)
     if (s_param_index == TUNE_IDX_SENSOR)
     {
         OledTask_DrawSensorPage();
+        return;
+    }
+
+    /* 模式切换页同样单独绘制 */
+    if (s_param_index == TUNE_IDX_MODE)
+    {
+        OledTask_DrawModePage();
         return;
     }
 
@@ -537,16 +722,6 @@ static void OledTask_Main(void *argument)
      */
     OLED_EnableAsync();
 
-    /*
-     * 启动横幅：确认调参任务真的在跑。
-     * 如果连这一行都看不到，说明 OledTask 根本没启动或串口不通。
-     */
-    {
-        const char *banner = "[tune] OledTask ready, 3 keys armed\r\n";
-        (void)HAL_UART_Transmit(&huart2, (uint8_t *)banner,
-                                (uint16_t)strlen(banner), 50U);
-    }
-
     /* 首帧 */
     OledTask_Draw();
 
@@ -575,44 +750,13 @@ static void OledTask_Main(void *argument)
             old_value = OledTask_ReadParam(s_param_index);
         }
 
-        /* ---- 2.5 【临时诊断】任何按键到达都打印 ---- */
-        if ((k1n != 0U) || (k2n != 0U) || (k3n != 0U))
-        {
-            char dbg[96];
-
-            (void)snprintf(dbg, sizeof(dbg),
-                           "[tune] got k1=%lu k2=%lu k3=%lu idx=%u val=%ld\r\n",
-                           (unsigned long)k1n,
-                           (unsigned long)k2n,
-                           (unsigned long)k3n,
-                           (unsigned int)s_param_index,
-                           (long)(OledTask_ReadParam(s_param_index) * 100.0f));
-            (void)HAL_UART_Transmit(&huart2, (uint8_t *)dbg,
-                                    (uint16_t)strlen(dbg), 50U);
-        }
-
         /* ---- 3. KEY1/KEY2：按步长增减当前参数 ---- */
         if ((k1n != 0U) || (k2n != 0U))
         {
             float step = s_params[s_param_index].step;
             float delta = (float)k2n * step - (float)k1n * step;
-            char  dbg2[112];
 
             OledTask_WriteParam(s_param_index, old_value + delta);
-
-            /*
-             * 写入后立刻读回，验证 SetGain 是否真的生效。
-             */
-            (void)snprintf(dbg2, sizeof(dbg2),
-                           "[tune] w %s step=%ld d=%ld old=%ld new=%ld rb=%ld\r\n",
-                           s_params[s_param_index].name,
-                           (long)(step * 1000.0f),
-                           (long)(delta * 1000.0f),
-                           (long)(old_value * 100.0f),
-                           (long)((old_value + delta) * 100.0f),
-                           (long)(OledTask_ReadParam(s_param_index) * 100.0f));
-            (void)HAL_UART_Transmit(&huart2, (uint8_t *)dbg2,
-                                    (uint16_t)strlen(dbg2), 50U);
         }
 
         /*
@@ -628,6 +772,7 @@ static void OledTask_Main(void *argument)
          * 根本看不到探头被遮挡时的变化。
          */
         if ((s_param_index == TUNE_IDX_SENSOR) ||
+            (s_param_index == TUNE_IDX_MODE) ||
             (old_index != s_param_index) ||
             (old_value != OledTask_ReadParam(s_param_index)) ||
             (g_ctrl_mode != CTRL_MODE_STOP))

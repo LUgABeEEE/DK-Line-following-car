@@ -57,6 +57,7 @@ ADC_HandleTypeDef hadc1;
 
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c2;
+DMA_HandleTypeDef hdma_i2c1_rx;
 DMA_HandleTypeDef hdma_i2c2_tx;
 
 TIM_HandleTypeDef htim1;
@@ -185,7 +186,19 @@ int main(void)
   Motor_Init();            /* 启动 PWM、拉高 STBY，并把电机停稳 */
   Encoder_Init();          /* 启动 TIM3 / TIM4 编码器计数 */
   Speed_PID_Init();        /* 初始化左右轮速度环，参数用 SpeedPID.h 里的默认值 */
-  Gray_Init(&g_gray);      /* 灰度传感器驱动状态复位（I2C 外设已由 MX_I2C1_Init 配好） */
+  /*
+   * 灰度传感器 I2C 总线恢复。
+   *
+   * 必须在第一次读传感器之前做。原因：
+   *   如果模块在上电时正卡在某个半截的 I2C 事务里，
+   *   它会把 SDA 一直拉低，I2C 的 BUSY 标志永远不释放，
+   *   之后所有读取都会超时（表现为 e=N/N，100% 失败）。
+   *
+   * 这个函数会给 SCL 打 9 个时钟并产生一个 STOP，
+   * 让从机释放总线。正常情况下它什么也不改变，只是多花约 20ms。
+   */
+  Gray_BusRecovery(&hi2c1);
+  Gray_Init(&g_gray);      /* 灰度传感器驱动状态复位 */
   LinePD_Init(&g_line_pd); /* 外环循迹 PD，参数用 LinePD.h 里的默认值 */
   Led_Init();              /* 两盏 LED 全灭，清空闪烁状态 */
   Key_Init();              /* 三个按键采信当前电平作为初始稳定态 */
@@ -618,17 +631,6 @@ static void MX_TIM4_Init(void)
 
   /* USER CODE END TIM4_Init 1 */
   htim4.Instance = TIM4;
-  /*
-   * ⚠️ 必须和 TIM3 一致！
-   *
-   * 两路编码器如果预分频不同，同样的转速会算出完全不同的速度值，
-   * 速度环就会一路正常、一路疯狂震荡。
-   *
-   * 历史问题：这里原来是 0（CubeMX 的默认值，因为 .ioc 里
-   * TIM4.IPParameters 没有 Prescaler 这一项），而 TIM3 是 49。
-   * 结果 A 轮计数率是 B 轮的 50 倍，实测速度虚高 50 倍，
-   * 表现为"A 轮 out 一直跳变、车轮一顿一顿"。
-   */
   htim4.Init.Prescaler = 49;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim4.Init.Period = 65535;
@@ -736,6 +738,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel4_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 6, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
+  /* DMA1_Channel7_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 6, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 
 }
 

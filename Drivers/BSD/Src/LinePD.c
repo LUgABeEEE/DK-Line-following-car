@@ -49,24 +49,61 @@ static float LinePD_ErrorLimit(void)
 }
 
 /* 把两个轮子的目标速度交给内环，并立即执行一次速度环 */
-static void LinePD_ApplyWheelSpeeds(const Line_PD_t *pd)
+static void LinePD_ApplyWheelSpeeds(Line_PD_t *pd)
 {
-    float left_speed  = pd->speed + pd->steer;
-    float right_speed = pd->speed - pd->steer;
+    /*
+     * ⚠️ 差速分配的方向 —— 这里曾经写反过，导致车一偏就朝更偏的方向冲出去。
+     *
+     * 【物理铁律】
+     *   差速驱动要往哪边转，【哪边的轮子就要慢下来】：
+     *       想左转 -> 左轮慢、右轮快
+     *       想右转 -> 左轮快、右轮慢
+     *
+     * 【符号推导】
+     *   error > 0 表示线在传感器【左侧】（Gray 的约定是左正右负）。
+     *   线在左边，说明车往右偏了，需要【向左转】。
+     *   向左转 = 左轮慢、右轮快，所以：
+     *       left_speed  = base - steer
+     *       right_speed = base + steer
+     *
+     * 【原来的错误写法】
+     *       left_speed  = base + steer
+     *   steer 为正时左轮反而加速，车向右转，越偏越远 —— 正反馈。
+     *   实测表现：车放上赛道一开始就朝一个方向冲出去。
+     */
+    float left_speed  = pd->speed + LINE_STEER_DIR * pd->steer;
+    float right_speed = pd->speed - LINE_STEER_DIR * pd->steer;
 
     /*
-     * 1. 先按整体速度上限夹一次，防止"基础速度 + 差速量"顶破内环量程
-     * 2. 再按差速限幅夹一次。因为 |steer| <= diff_limit，夹完必然满足
-     *    |左右之差| <= diff_limit，内侧轮不会被反向拖成倒转。
-     *    默认 diff_limit(25) < base_speed(30)，所以内侧轮最慢只会到 0，不会反转。
+     * 只按【内环允许的目标速度上限】夹一次。
+     *
+     * ⚠️ 原来的代码这里还多夹了一次 diff_limit，那是错的：
+     *    diff_limit 限制的是"差速量 steer"（在第 6 步已经夹过了），
+     *    不是车轮的绝对速度。
+     *
+     *    以 base_speed=30、diff_limit=25 为例：
+     *      直行 steer=0  ->  left=right=30  会被夹成 25，车速直接掉 17%
+     *      转弯 steer=23 ->  left=53 夹成 25、right=7
+     *                        内侧/外侧都跑不到该有的速度，平均速度只剩 16
+     *
+     *    表现就是：车能走，但明显比设定慢，转弯也不利索。
+     *
+     * 现在的做法：
+     *    steer 已经限幅到 ±diff_limit，所以 |left-right| <= 2*diff_limit，
+     *    差速本身是安全的；再按 speed_limit 夹一次就够了。
      */
     left_speed  = LinePD_Clamp(left_speed,  pd->speed_limit);
     right_speed = LinePD_Clamp(right_speed, pd->speed_limit);
-    left_speed  = LinePD_Clamp(left_speed,  pd->diff_limit);
-    right_speed = LinePD_Clamp(right_speed, pd->diff_limit);
 
-    Speed_PID_Update(MOTOR_A, left_speed);
-    Speed_PID_Update(MOTOR_B, right_speed);
+    /*
+     * 只保存目标，不在这里驱动速度环！
+     *
+     * 内环由 ControlTask 的 20ms 节拍单独驱动，
+     * 这样速度环保持 50Hz、循迹环保持 10Hz，各自独立。
+     * 详见 LinePD.h 里 left_target 字段的说明。
+     */
+    pd->left_target  = left_speed;
+    pd->right_target = right_speed;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -105,6 +142,8 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->lost_count     = 0U;
     pd->line_lost      = 0U;
     pd->first_run      = 1U;
+    pd->left_target    = 0.0f;
+    pd->right_target   = 0.0f;
 }
 
 void LinePD_SetGains(Line_PD_t *pd, float kp, float kd, float base_speed)
@@ -220,7 +259,35 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
         /* 线性插值：正中时为 1.0，偏到极限时为 LINE_CURVE_SLOW_MIN */
         slow_factor = 1.0f - (normalized * (1.0f - LINE_CURVE_SLOW_MIN));
     }
-    pd->speed = pd->base_speed * slow_factor;
+    /*
+     * 基础速度带起步斜坡。
+     *
+     * 目标值 = base_speed × 弯道减速系数；
+     * 实际值 pd->speed 每拍最多变化 (斜率 × 外环周期)，
+     * 这样从 0 起步或者中途调大 LBAS 都不会出现阶跃。
+     */
+    {
+        float target_speed = pd->base_speed * slow_factor;
+        float step = LINE_SPEED_RAMP_CMS_PER_SEC
+                     * ((float)LINE_PD_PERIOD_MS / 1000.0f);
+
+        if (pd->speed < target_speed)
+        {
+            pd->speed += step;
+            if (pd->speed > target_speed)
+            {
+                pd->speed = target_speed;
+            }
+        }
+        else if (pd->speed > target_speed)
+        {
+            pd->speed -= step;
+            if (pd->speed < target_speed)
+            {
+                pd->speed = target_speed;
+            }
+        }
+    }
 
     /* ---------- 7. 丢线超时处理 ---------- */
     if (pd->lost_count > LINE_LOST_TOLERANCE)
@@ -231,6 +298,20 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
         {
             const char *msg = "[LinePD] line lost, stop\r\n";
             Speed_PID_StopAll();
+
+            /*
+             * 必须把目标速度也清零！
+             *
+             * Speed_PID_StopAll() 只复位 PID 内部状态，
+             * 但内环节拍每 20ms 会拿 pd->left_target/right_target
+             * 重新调用 Speed_PID_Update。如果这里不清，
+             * 内环会立刻用【旧目标】把 PID 又驱动起来 ——
+             * 判了丢线，车却继续按上一次的速度跑。
+             */
+            pd->left_target  = 0.0f;
+            pd->right_target = 0.0f;
+            pd->steer        = 0.0f;
+
             HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)strlen(msg), 20U);
         }
 #else
@@ -240,13 +321,19 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
          */
         {
             float low_speed = pd->base_speed * LINE_CURVE_SLOW_MIN * 0.5f;
-            float left_speed  = low_speed + steer;
-            float right_speed = low_speed - steer;
+            /*
+             * 差速方向必须和正常循迹一致（见 LinePD_ApplyWheelSpeeds 的推导）：
+             * 线在左（steer>0）就要向左转，也就是左轮慢、右轮快。
+             */
+            float left_speed  = low_speed + LINE_STEER_DIR * steer;
+            float right_speed = low_speed - LINE_STEER_DIR * steer;
 
             left_speed  = LinePD_Clamp(left_speed,  pd->speed_limit);
             right_speed = LinePD_Clamp(right_speed, pd->speed_limit);
-            Speed_PID_Update(MOTOR_A, left_speed);
-            Speed_PID_Update(MOTOR_B, right_speed);
+
+            /* 同样只写目标，由内环节拍负责驱动 */
+            pd->left_target  = left_speed;
+            pd->right_target = right_speed;
         }
 #endif
 
