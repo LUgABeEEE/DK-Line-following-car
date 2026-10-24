@@ -214,195 +214,35 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
      *   2. 阈值一旦偏得厉害，归一化值只剩 0.05 量级，
      *      两路加起来刚到丢线门限，稍微一动就误判丢线
      */
-    /*
-     * ---- 5a. 分叉检测：找出连续的"看到线"通道簇 ----
-     *
-     * 【为什么需要】
-     *   锐角弯（比如 40 度内角）的两条腿靠得很近，
-     *   49mm 阵列会【同时看到两条腿】。
-     *   如果直接对所有通道求加权质心，质心会落在两腿中间 ——
-     *   误差接近 0，车以为自己在正中间，直冲过弯道，
-     *   等两条腿都离开视野就彻底丢线，而且"最后位置"在错误的
-     *   一侧，搜索还会朝反方向转。
-     *
-     *   正确做法：把每一段连续的通道当作一条独立的"腿"，
-     *   只跟踪【离上一次位置最近】的那一条。
-     *   这样车会一直沿着自己所在的那条腿走，
-     *   等那条腿走完（通道簇消失），位置会自然跳到另一条腿上，
-     *   产生一个大幅误差 —— 正是急转弯需要的。
-     */
+    for (i = 0U; i < GRAY_CHANNEL_COUNT; i++)
     {
-        uint8_t  cl_first[GRAY_CHANNEL_COUNT];   /* 每个簇的起始通道 */
-        uint8_t  cl_last[GRAY_CHANNEL_COUNT];    /* 每个簇的结束通道 */
-        uint8_t  cl_count = 0U;
-        uint8_t  chosen  = 0U;
-        uint8_t  gate_from;
-        uint8_t  gate_to;
-        float    last_ch;
+        float v = 0.0f;
+        float pos_mm;
 
-        i = 0U;
-        while (i < GRAY_CHANNEL_COUNT)
+        if (sensor->channel[i] != 0U)
         {
-            if (sensor->channel[i] != 0U)
+            float diff = (float)sensor->analog[i] - (float)sensor->threshold[i];
+
+            /* 取绝对值：线比背景亮或暗都适用，不再依赖极性配置 */
+            if (diff < 0.0f)
             {
-                uint8_t start = (uint8_t)i;
-
-                while ((i < GRAY_CHANNEL_COUNT) && (sensor->channel[i] != 0U))
-                {
-                    i++;
-                }
-                if (cl_count < GRAY_CHANNEL_COUNT)
-                {
-                    cl_first[cl_count] = start;
-                    cl_last[cl_count]  = (uint8_t)(i - 1U);
-                    cl_count++;
-                }
+                diff = -diff;
             }
-            else
-            {
-                i++;
-            }
-        }
-
-        sensor->fork_count = cl_count;
-        sensor->fork_dir   = 0;
-
-        if (cl_count == 0U)
-        {
-            /* 没有通道看到线，后面的质心自然是 0，交给丢线判定处理 */
-            gate_from = 0U;
-            gate_to   = (uint8_t)(GRAY_CHANNEL_COUNT - 1U);
-        }
-        else if (cl_count == 1U)
-        {
-            /* 只有一条腿：正常情况，全通道参与 */
-            gate_from = 0U;
-            gate_to   = (uint8_t)(GRAY_CHANNEL_COUNT - 1U);
-            sensor->fork_dir = 0;
-        }
-        else
-        {
-            /*
-             * 多条腿：选离上一次位置最近的那一条。
-             * s_last_position_mm 是"左正右负"的物理位置，
-             * 先换算回通道下标：
-             *     通道下标 = 3.5 + pos_mm / (间距 × 方向系数)
-             */
-            float denom = GRAY_CHANNEL_PITCH_MM * GRAY_DIR_SIGN;
-
-            last_ch = (GRAY_CHANNEL_COUNT - 1U) * 0.5f
-                      + ((denom > 0.001f) || (denom < -0.001f)
-                         ? (s_last_position_mm / denom) : 0.0f);
-
-            {
-                float best_dist = 1.0e9f;
-                uint8_t c;
-
-                for (c = 0U; c < cl_count; c++)
-                {
-                    float center = ((float)cl_first[c] + (float)cl_last[c]) * 0.5f;
-                    float dist   = center - last_ch;
-
-                    if (dist < 0.0f)
-                    {
-                        dist = -dist;
-                    }
-                    if (dist < best_dist)
-                    {
-                        best_dist = dist;
-                        chosen    = c;
-                    }
-                }
-            }
-
-            gate_from = cl_first[chosen];
-            gate_to   = cl_last[chosen];
 
             /*
-             * 记录"另一条腿"在哪一侧，作为急弯预警的方向。
-             *
-             * 取所有其它簇里最近的那个作为参照（一般只有两条腿）。
-             * 方向换算成位置的正负约定：
-             *     另一条腿的通道下标更大 -> 位置更负 -> 在【右】侧 -> -1
-             *     另一条腿的通道下标更小 -> 位置更正 -> 在【左】侧 -> +1
+             * 除以 1000 只是为了让 strength 的数值落在 0~3 这种好读的范围：
+             * 实测偏差约 90~340，除以 1000 后单路权重 0.09~0.34，
+             * 两路在线时总和约 0.4，远高于 GRAY_STRENGTH_MIN(0.10)。
              */
-            {
-                uint8_t c;
-                float   sel_center = ((float)cl_first[chosen]
-                                      + (float)cl_last[chosen]) * 0.5f;
-                float   best_dist  = 1.0e9f;
-                float   other_center = sel_center;
-
-                for (c = 0U; c < cl_count; c++)
-                {
-                    float center;
-                    float dist;
-
-                    if (c == chosen)
-                    {
-                        continue;
-                    }
-
-                    center = ((float)cl_first[c] + (float)cl_last[c]) * 0.5f;
-                    dist   = center - sel_center;
-                    if (dist < 0.0f)
-                    {
-                        dist = -dist;
-                    }
-                    if (dist < best_dist)
-                    {
-                        best_dist    = dist;
-                        other_center = center;
-                    }
-                }
-
-                if (other_center > sel_center)
-                {
-                    sensor->fork_dir = (GRAY_DIR_SIGN > 0.0f) ? 1 : -1;
-                }
-                else if (other_center < sel_center)
-                {
-                    sensor->fork_dir = (GRAY_DIR_SIGN > 0.0f) ? -1 : 1;
-                }
-                else
-                {
-                    sensor->fork_dir = 0;
-                }
-            }
+            v = diff / 1000.0f;
         }
 
-        /* 只统计被选中的那条腿 */
-        for (i = 0U; i < GRAY_CHANNEL_COUNT; i++)
-        {
-            float v = 0.0f;
-            float pos_mm;
+        pos_mm  = ((float)i - (float)(GRAY_CHANNEL_COUNT - 1U) * 0.5f)
+                  * GRAY_CHANNEL_PITCH_MM;
+        pos_mm *= GRAY_DIR_SIGN;
 
-            if ((i >= gate_from) && (i <= gate_to) &&
-                (sensor->channel[i] != 0U))
-            {
-                float diff = (float)sensor->analog[i] - (float)sensor->threshold[i];
-
-                /* 取绝对值：线比背景亮或暗都适用，不再依赖极性配置 */
-                if (diff < 0.0f)
-                {
-                    diff = -diff;
-                }
-
-                /*
-                 * 除以 1000 只是为了让 strength 的数值落在 0~3 这种好读的范围：
-                 * 实测偏差约 90~340，除以 1000 后单路权重 0.09~0.34，
-                 * 两路在线时总和约 0.4，远高于 GRAY_STRENGTH_MIN(0.10)。
-                 */
-                v = diff / 1000.0f;
-            }
-
-            pos_mm  = ((float)i - (float)(GRAY_CHANNEL_COUNT - 1U) * 0.5f)
-                      * GRAY_CHANNEL_PITCH_MM;
-            pos_mm *= GRAY_DIR_SIGN;
-
-            weighted   += v * pos_mm;
-            weight_sum += v;
-        }
+        weighted   += v * pos_mm;
+        weight_sum += v;
     }
 
     sensor->strength = weight_sum;

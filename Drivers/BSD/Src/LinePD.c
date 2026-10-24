@@ -143,8 +143,6 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->line_lost      = 0U;
     pd->first_run      = 1U;
     pd->search_ms      = 0U;
-    pd->fork_dir       = 0;
-    pd->fork_hold      = 0U;
     pd->left_target    = 0.0f;
     pd->right_target   = 0.0f;
 }
@@ -210,30 +208,6 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
     }
 
     /* ---------- 2. 取误差并按线性区限幅 ---------- */
-    /*
-     * ---- 分叉预警：提前减速 + 锁存急弯方向 ----
-     *
-     * 分叉（阵列同时看到两段线）意味着前方大概率是锐角弯。
-     * 这比"等误差涨起来"早得多，是真正的前馈信息。
-     */
-    if (gray->fork_count >= 2U)
-    {
-        pd->fork_dir  = gray->fork_dir;
-        pd->fork_hold = LINE_FORK_HOLD_CYCLES;
-    }
-    else if (pd->fork_hold > 0U)
-    {
-        pd->fork_hold--;
-        if (pd->fork_hold == 0U)
-        {
-            pd->fork_dir = 0;
-        }
-    }
-    else
-    {
-        pd->fork_dir = 0;
-    }
-
     error_limit = LinePD_ErrorLimit();
     error = LinePD_Clamp(Gray_GetPositionCm(gray), error_limit);
     pd->error = error;
@@ -298,16 +272,6 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
         float step = LINE_SPEED_RAMP_CMS_PER_SEC
                      * ((float)LINE_PD_PERIOD_MS / 1000.0f);
 
-        /*
-         * 分叉存在时再乘一层减速系数。
-         * 用 fork_hold 而不是 fork_count，是因为刚拐过去的那几百毫秒
-         * 仍然应该保持低速，避免出弯瞬间又冲起来。
-         */
-        if (pd->fork_hold > 0U)
-        {
-            target_speed *= LINE_FORK_SLOW_FACTOR;
-        }
-
         if (pd->speed < target_speed)
         {
             pd->speed += step;
@@ -354,25 +318,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
             float v_outer = LINE_SEARCH_SPEED_CMS;
             float v_inner = -LINE_SEARCH_SPEED_CMS * LINE_SEARCH_INNER_RATIO;
 
-            /*
-             * 搜索方向的选择优先级：
-             *   1. 锁存的分叉方向（fork_dir）—— 直接观察到的急弯方向，最可靠
-             *   2. 最后一次误差的符号 —— 单条线丢线时的常规依据
-             *
-             * 为什么优先分叉方向：锐角弯时"最后一次位置"可能被
-             * 两条腿的质心污染过，符号可能是错的；
-             * 而分叉方向是入弯前就观察到的，不受影响。
-             */
-            uint8_t turn_left;
-
-            if (pd->fork_hold > 0U)
-            {
-                turn_left = (pd->fork_dir >= 0) ? 1U : 0U;
-            }
-            else
-            {
-                turn_left = (pd->error >= 0.0f) ? 1U : 0U;
-            }
+            uint8_t turn_left = (pd->error >= 0.0f) ? 1U : 0U;
 
             if (turn_left != 0U)
             {
