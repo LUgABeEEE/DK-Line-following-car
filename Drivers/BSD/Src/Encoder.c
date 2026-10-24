@@ -211,18 +211,29 @@ float Encoder_GetFix(uint32_t index)
 
 void Encoder_SetFix(uint32_t index, float value)
 {
-    /* 合理范围限制：修正量超过 ±10% 说明机械/接线有别的问题 */
+    /*
+     * 合理范围限制。
+     *
+     * 原来是 ±10%（0.90~1.10），但排查中发现两轮的偏差可能更大：
+     *   - 电机个体差异
+     *   - 编码器码盘公差
+     *   - 轮胎磨损/气压不一致
+     * 所以放宽到 ±30%，给调参留出余地。
+     *
+     * 如果为了走直线需要调到超过 ±20%，说明硬件有明显问题
+     * （电机老化、编码器坏了、轮胎直径差很多），应优先修硬件。
+     */
     if (index >= ENCODER_COUNT)
     {
         return;
     }
-    if (value < 0.90f)
+    if (value < 0.70f)
     {
-        value = 0.90f;
+        value = 0.70f;
     }
-    else if (value > 1.10f)
+    else if (value > 1.30f)
     {
-        value = 1.10f;
+        value = 1.30f;
     }
     s_fix_factor[index] = value;
 }

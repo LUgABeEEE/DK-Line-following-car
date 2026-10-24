@@ -471,6 +471,17 @@ static void BleTask_DumpGains(void)
                                 Speed_PID_GetGain(MOTOR_A, SPEED_PID_GAIN_KFF)));
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
                             (uint16_t)strlen(line), 50U);
+
+    /*
+     * 外环增益单独一行。
+     * 之前只输出了内环，排查循迹问题时看不到 LKP/LKD，只能靠反推。
+     */
+    (void)snprintf(line, sizeof(line), "[P] lkp%s lkd%s lbas%s\r\n",
+                   BleTask_Fmt1(b1, sizeof(b1), g_line_pd.kp),
+                   BleTask_Fmt1(b2, sizeof(b2), g_line_pd.kd),
+                   BleTask_Fmt1(b3, sizeof(b3), g_line_pd.base_speed));
+    (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
+                            (uint16_t)strlen(line), 50U);
 }
 
 /* ------------------------------------------------------------------------- */
