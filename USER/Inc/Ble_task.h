@@ -77,4 +77,7 @@
  */
 uint8_t BleTask_Init(void);
 
+/* 诊断：本任务栈的历史最小剩余量（单位：字）。任务未创建时返回 0。 */
+uint32_t BleTask_GetStackFreeWords(void);
+
 #endif //LINEFOLLOWING_CAR_BLE_TASK_H

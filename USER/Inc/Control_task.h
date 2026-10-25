@@ -111,4 +111,11 @@ void ControlTask_RequestSpeedTest(float target_cms);
 /* 创建实时控制任务。必须在 vTaskStartScheduler() 之前调用。返回 1 = 成功。 */
 uint8_t ControlTask_Init(void);
 
+/*
+ * 诊断：任务栈的历史最小剩余量（单位：字，1 字 = 4 字节）。
+ * 数值越小越危险；接近 0 就说明栈快不够用了。任务未创建时返回 0。
+ * 用来抓"长时间运行后开始抖动"这类内存类问题。
+ */
+uint32_t ControlTask_GetStackFreeWords(void);
+
 #endif //LINEFOLLOWING_CAR_CONTROL_TASK_H

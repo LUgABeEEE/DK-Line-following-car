@@ -302,6 +302,44 @@ ENCODER_CALIBRATION_new = ENCODER_CALIBRATION_old × L / Delta
 
 分轮跑偏仍用 `ENCODER_A_FIX / B_FIX` 微调（每次 0.005 量级）：车往左偏 → 减小 `A_FIX`。
 
+### 6.5 长时间运行的计数 / 内存审计
+
+"跑久了开始抖"这类问题，先排除计数回绕和内存耗尽。逐项核对结果：
+
+| 量 | 类型 | 实际上限 | 结论 |
+|---|---|---|---|
+| 编码器单拍增量 | `int16_t` | 20 ms 窗口内约 350 计数（200 cm/s），上限 32767 | 安全 |
+| 累计里程 `s_distance_cm` | `float` | 1 km 处精度 0.008 cm、100 km 处 0.8 cm | 只影响显示 |
+| 偏航角 `yaw_deg` | `float` | 5000° 处精度 0.0005°、10⁶° 处 0.06° | 单次转弯够用 |
+| 内环积分 | `float` | 限幅 ±40（0.4 × 100） | 不会爆炸 |
+| `search_ms` | `uint16_t` | 饱和在 65535 ms（65 s） | 安全（饱和后即停车） |
+| `lost_count` / `corner_*` / `recover_count` | `uint8_t` | 全部有 `< 0xFF` 限幅 | 安全 |
+| **`fail_count`（I2C 连续失败）** | 原 `uint8_t` | 无上限 → **连续失败 256 次回绕成 0** | ❌ 已修：`uint16_t` + 限幅 |
+| `scene_flips` | `uint16_t` | 饱和（有保护） | 只影响统计 |
+| `total_reads` / `total_fails` / `s_rx_total` | `uint32_t` | 50 Hz 下约 2.7 年；600 B/s 下约 79 天 | 安全 |
+| 任务栈 | — | BLE 1280 B（帧链约 700 B）、Ctrl 1280 B（约 350 B）、OLED 1792 B（约 350 B） | 有余量，但原来溢出检测是关的 |
+| 堆 | — | 10 KB，任务+信号量约 6 KB，剩约 4 KB | 够用 |
+
+已修/已加：
+
+1. **`fail_count` 位宽**：以前连续失败 256 次会回绕成 0，`fail_count >= GRAY_FAIL_LIMIT`
+   又变 false —— 上层以为总线恢复了，继续拿陈旧数据开车。现在是 `uint16_t` 并限幅。
+2. **打开 FreeRTOS 保护**：`configCHECK_FOR_STACK_OVERFLOW = 2`、
+   `configUSE_MALLOC_FAILED_HOOK = 1`，并实现钩子（`USER/Src/app_hooks.c`）：
+   - **LED1 常亮 + 车停住** = 栈溢出
+   - **LED2 常亮 + 车停住** = 堆分配失败
+   以前这两种情况是静默的内存破坏，表现就是"跑一会儿就抖/乱走"。
+3. **新增运行期诊断行 `[M]`**（每 10 s 一行）：
+
+   ```text
+   [M] heap4120 stkC980 stkO1520 stkB760 i2c14/18000
+   ```
+
+   - `heap`：剩余堆字节。本工程运行期不再动态分配，**它应该是常数**；持续下降 = 泄漏；
+   - `stkC/O/B`：三个任务栈的**历史最小剩余字节**（`uxTaskGetStackHighWaterMark`），
+     低于 200 就该加大对应任务的 `*_STACK_WORDS`；
+   - `i2c`：灰度传感器累计失败/总读取，长期错误率升高 = 接线/上拉问题。
+
 ---
 
 ## 7. 已知问题 / TODO

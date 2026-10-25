@@ -27,6 +27,7 @@
 #include "PWM.h"            /* MOTOR_A / MOTOR_B */
 #include "LinePD.h"         /* 外环运行数据 */
 #include "Encoder.h"        /* 编码器原始计数与里程 */
+#include "Oled_task.h"      /* OledTask_GetStackFreeWords() */
 
 /*
  * 构建标记。
@@ -38,7 +39,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "p"
+#define BLE_BUILD_TAG   "q"
 
 /*
  * UART 发送超时，单位 ms。
@@ -58,6 +59,12 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+
+/* heap_4 的查询接口（FreeRTOS.h 不保证给出原型，这里自己声明） */
+extern size_t xPortGetFreeHeapSize(void);
+
+/* 运行期资源诊断周期：每 10s 打一行 [M]，看堆和任务栈的余量 */
+#define BLE_DIAG_PERIOD_MS      10000U
 
 /* 串口句柄定义在 main.c 中 */
 extern UART_HandleTypeDef huart2;
@@ -615,7 +622,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-25p (built " __DATE__ " " __TIME__ ")\r\n");
+    BleTask_Print("[VER] line-follower 2025-10-25q (built " __DATE__ " " __TIME__ ")\r\n");
     BleTask_Print("[BleTask] X=stop I=scan I2C\r\n");
 
     /* 同步一次连接状态，避免把"上电时已连接"误报成一次新连接 */
@@ -694,6 +701,35 @@ static void BleTask_Main(void *argument)
             BleTask_DumpPid(s_speed_div);
         }
 
+        /*
+         * ---- 运行期资源诊断 ----
+         *
+         * 每 10 秒一行，专门回答"长时间运行后空间够不够"：
+         *   heap     : 剩余堆字节（任务栈、信号量都从这里分配）
+         *   stkC/O/B : 三个任务栈的【历史最小剩余字节数】
+         *              （uxTaskGetStackHighWaterMark × 4，越接近 0 越危险）
+         *   i2c      : 灰度传感器累计失败/总读取，用来看长期错误率
+         *
+         * 跑久之后 stk 余量一直变小 -> 栈在持续增长；
+         * heap 一直变小 -> 有动态内存泄漏。
+         */
+        {
+            static uint32_t s_diag_tick = 0U;
+
+            if ((HAL_GetTick() - s_diag_tick) >= BLE_DIAG_PERIOD_MS)
+            {
+                s_diag_tick = HAL_GetTick();
+
+                BleTask_Print("[M] heap%u stkC%u stkO%u stkB%u i2c%u/%u\r\n",
+                              (unsigned int)xPortGetFreeHeapSize(),
+                              (unsigned int)(ControlTask_GetStackFreeWords() * 4U),
+                              (unsigned int)(OledTask_GetStackFreeWords() * 4U),
+                              (unsigned int)(BleTask_GetStackFreeWords() * 4U),
+                              (unsigned int)g_gray.total_fails,
+                              (unsigned int)g_gray.total_reads);
+            }
+        }
+
         /* ---- 连接状态变化：更新 LED 并提示 ---- */
         {
             uint8_t connected = BLE_IsConnected();
@@ -715,7 +751,7 @@ static void BleTask_Main(void *argument)
                      * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
                      * 放在这里就能保证每次连接都能确认。
                      */
-                    BleTask_Print("[VER] line-follower 2025-10-25p (built "
+                    BleTask_Print("[VER] line-follower 2025-10-25q (built "
                                   __DATE__ " " __TIME__ ")\r\n");
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");
                 }
@@ -760,6 +796,16 @@ uint8_t BleTask_Init(void)
     }
 
     return 1U;
+}
+
+
+uint32_t BleTask_GetStackFreeWords(void)
+{
+    if (s_task_handle == NULL)
+    {
+        return 0U;
+    }
+    return (uint32_t)uxTaskGetStackHighWaterMark(s_task_handle);
 }
 
 //

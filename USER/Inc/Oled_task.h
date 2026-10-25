@@ -99,4 +99,7 @@ uint8_t OledTask_GetParamIndex(void);
 /* 查询当前选中参数的值 */
 float OledTask_GetParamValue(void);
 
+/* 诊断：任务栈的历史最小剩余量（单位：字）。任务未创建时返回 0。 */
+uint32_t OledTask_GetStackFreeWords(void);
+
 #endif //LINEFOLLOWING_CAR_OLED_TASK_H

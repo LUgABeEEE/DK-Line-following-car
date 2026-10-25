@@ -848,6 +848,16 @@ uint8_t OledTask_Init(void)
     return 1U;
 }
 
+
+uint32_t OledTask_GetStackFreeWords(void)
+{
+    if (s_task_handle == NULL)
+    {
+        return 0U;
+    }
+    return (uint32_t)uxTaskGetStackHighWaterMark(s_task_handle);
+}
+
 //
 // Created by JiangyaF on 2026/10/22.
 //

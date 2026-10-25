@@ -57,6 +57,7 @@ add_executable(${CMAKE_PROJECT_NAME}
         USER/Inc/Ble_task.h
         USER/Inc/Control_task.h
         USER/Inc/Oled_task.h
+        USER/Src/app_hooks.c
 
 
 )

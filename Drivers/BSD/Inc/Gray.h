@@ -339,7 +339,15 @@ typedef struct
     uint8_t  line_lost;         /* 1 = 丢线（所有通道都没看到线）                */
     uint8_t  line_valid;        /* 1 = 本次位置解算有效                          */
     uint8_t  threshold_loaded;  /* 1 = 阈值已经从模块读回                        */
-    uint8_t  fail_count;        /* 连续 I2C 失败次数（成功后清零）               */
+    /*
+     * 连续 I2C 失败次数（成功后清零）。
+     *
+     * ⚠️ 必须是 uint16：以前是 uint8，连续失败 256 次会回绕成 0，
+     * 于是 `fail_count >= GRAY_FAIL_LIMIT` 又变成 false，
+     * 上层以为总线恢复了，继续拿【上电时的陈旧数据】开车 ——
+     * 长时间跑（或 I2C 被干扰锁死）后出现的"莫名抖动/乱走"就是这么来的。
+     */
+    uint16_t fail_count;
 
     /*
      * 累计统计 —— 用于评估硬件健康度。

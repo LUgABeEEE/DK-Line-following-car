@@ -209,7 +209,10 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
     /* ---------- 1. 读数字状态（寄存器 5，1 字节） ---------- */
     if (Gray_ReadRegisters(hi2c, GRAY_REG_STATE, &raw_state, 1U) == 0U)
     {
-        sensor->fail_count++;
+        if (sensor->fail_count < 0xFFFFU)
+        {
+            sensor->fail_count++;       /* 限幅，避免回绕成"假恢复" */
+        }
         sensor->total_fails++;
         sensor->line_valid = 0U;
         return (sensor->fail_count >= GRAY_FAIL_LIMIT) ? 2U : 1U;
@@ -218,7 +221,10 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
     /* ---------- 2. 读 8 路模拟值（寄存器 6~21，16 字节，一次事务） ---------- */
     if (Gray_ReadRegisters(hi2c, GRAY_REG_ANALOG_CH1, raw_analog, sizeof(raw_analog)) == 0U)
     {
-        sensor->fail_count++;
+        if (sensor->fail_count < 0xFFFFU)
+        {
+            sensor->fail_count++;       /* 限幅，避免回绕成"假恢复" */
+        }
         sensor->total_fails++;
         sensor->line_valid = 0U;
         return (sensor->fail_count >= GRAY_FAIL_LIMIT) ? 2U : 1U;
