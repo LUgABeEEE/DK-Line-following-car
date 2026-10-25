@@ -32,9 +32,13 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -fdata-sections -ffunction-sections -f
 # However, most GCC toolchains do not support this option, which causes a compilation error; for this reason, the feature is disabled by default.
 # set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fcyclomatic-complexity")
 
-set(CMAKE_C_FLAGS_DEBUG "-O0 -g3")
+# Debug 用 -Og，不沿用 CubeMX 默认的 -O0：
+#   本工程（HAL + FreeRTOS + USB + 全部 BSD 驱动）在 -O0 下约 73 KB，
+#   超过 F103C8T6 的 64 KB Flash，链接直接报 region FLASH overflowed by ~7.4 KB；
+#   -Og 约 49 KB，能编过且保留大部分调试信息（被优化掉的局部变量不可见）。
+set(CMAKE_C_FLAGS_DEBUG "-Og -g3")
 set(CMAKE_C_FLAGS_RELEASE "-Os -g0")
-set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g3")
+set(CMAKE_CXX_FLAGS_DEBUG "-Og -g3")
 set(CMAKE_CXX_FLAGS_RELEASE "-Os -g0")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -fno-rtti -fno-exceptions -fno-threadsafe-statics")

@@ -395,6 +395,17 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
     {
         pd->line_lost = 1U;
 
+        /*
+         * 【注意顺序：必须先判断"是否刚进入"，再累加计时】
+         *
+         * 之前的写法是"先累加 search_ms，再判断 search_ms==0"，
+         * 结果 search_ms 在判断前就变成了 40，条件永远不成立，
+         * 方向锁存代码从来没执行过 —— search_dir 一直是 0，
+         * 于是每次都走进停车分支，表现为"一丢线就停"。
+         */
+        {
+            uint8_t just_entered = (pd->search_ms == 0U) ? 1U : 0U;
+
         /* 累计搜索时间（外环节拍固定，累加即可） */
         if (pd->search_ms < 0xFFFFU)
         {
@@ -405,10 +416,10 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         /*
          * ---- 刚进入搜索：锁定方向 ----
          *
-         * 只在 search_ms 还是 0 的那一拍锁存，之后不再改变。
+         * 只在刚进入的那一拍锁存，之后不再改变。
          * 这样即使斑块扫过、偶尔又看到一点线，也不会把方向翻掉。
          */
-        if (pd->search_ms == 0U)
+        if (just_entered != 0U)
         {
             /*
              * 搜索方向的选择，按可靠度排序：
@@ -516,6 +527,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             return LINE_PD_ERR_LOST;
         }
 #endif
+        }
 
         /*
          * ---- 搜索超时（或搜索被禁用）：停车 ----
@@ -558,6 +570,27 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 
     if (pd->recover_count >= LINE_RECOVER_CYCLES)
     {
+        /*
+         * 如果刚才确实在搜索（search_ms > 0），说明是靠搜索找回来的。
+         * 打印搜索用掉的毫秒数 —— 用它就能知道锐角弯实际需要转多少度，
+         * 从而把 LINE_SEARCH_TIMEOUT_MS 定在有依据的数值上。
+         *
+         * 换算：转角 = search_ms / 1000 × 183 度
+         */
+        if (pd->search_ms > 0U)
+        {
+            char msg[64];
+            int  len = snprintf(msg, sizeof(msg),
+                                "[LinePD] search ok, %ums\r\n",
+                                (unsigned int)pd->search_ms);
+
+            if (len > 0)
+            {
+                HAL_UART_Transmit(&huart2, (uint8_t *)msg,
+                                  (uint16_t)len, 20U);
+            }
+        }
+
         pd->search_ms   = 0U;
         pd->search_dir  = 0;
         pd->recover_count = LINE_RECOVER_CYCLES;

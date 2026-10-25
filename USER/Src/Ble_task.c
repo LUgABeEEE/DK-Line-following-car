@@ -27,6 +27,18 @@
 #include "PWM.h"            /* MOTOR_A / MOTOR_B */
 #include "LinePD.h"         /* 外环运行数据 */
 #include "Encoder.h"        /* 编码器原始计数与里程 */
+
+/*
+ * 构建标记。
+ *
+ * 直接放进 [L] 行的开头（而不是单独一行），原因：
+ *   手机的串口 APP 常在 50 字符左右截断/换行，
+ *   单独一行 [VER] 容易被用户错过，行尾的版本线索又会被截掉。
+ *   放在 [L] 行最前面，只要能看到这一行就一定看得到版本。
+ *
+ * 每次行为有变化就改这里的字母。
+ */
+#define BLE_BUILD_TAG   "j"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -152,6 +164,9 @@ static void BleTask_Print(const char *fmt, ...)
 /*
  * 输出一行 8 路数据。line_type 决定是模拟值 'A' 还是阈值 'T'。
  */
+/* 前置声明：DumpGray 里的 [S] 行要用到 */
+static const char *BleTask_Fmt1(char *buf, uint16_t size, float value);
+
 static void BleTask_DumpGrayArray(char line_type, const uint16_t *arr)
 {
     char     line[160];
@@ -239,6 +254,30 @@ static void BleTask_DumpGray(void)
 
     BleTask_DumpGrayArray('A', g_gray.analog);
     BleTask_DumpGrayArray('T', g_gray.threshold);
+
+    /*
+     * 场景判据的原始特征，单独一行（2 秒一次）。
+     *
+     * 放在这里而不是 [L] 行，是因为 [L] 每 200ms 一次、容易被 APP 截断；
+     * 这些是标定阈值用的数据，不需要那么高的刷新率。
+     *
+     *   ln/rt : 左/右半边激活路数
+     *   cl/sp : 簇个数 / 最大簇跨度
+     *   lv    : 最后一次有效位置 cm
+     */
+    {
+        char sv[14];
+
+        (void)snprintf(line, sizeof(line), "[S] ln%u rt%u cl%u sp%u lv%s\r\n",
+                       (unsigned int)g_gray.scene_left,
+                       (unsigned int)g_gray.scene_right,
+                       (unsigned int)g_gray.scene_clusters,
+                       (unsigned int)g_gray.scene_span,
+                       BleTask_Fmt1(sv, sizeof(sv),
+                                    g_gray.last_valid_mm * 0.1f));
+    }
+    (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
+                            (uint16_t)strlen(line), 50U);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -360,8 +399,6 @@ static const char *BleTask_Fmt1(char *buf, uint16_t size, float value)
 }
 
 /* 前置声明（DumpGains 用） */
-static const char *BleTask_Fmt1(char *buf, uint16_t size, float value);
-
 /*
  * 输出一次 PID 运行数据：外环一行 + 内环两行。
  */
@@ -372,7 +409,6 @@ static void BleTask_DumpPid(void)
     char b2[14];
     char b3[14];
     char b4[14];
-    char b6[14];      /* lv 专用，不能和 e 共用的 b1 */
     /*
      * 里程单独一个缓冲。
      * 之前和 b3（输出）共用了，而 snprintf 的参数求值顺序不确定，
@@ -427,7 +463,8 @@ static void BleTask_DumpPid(void)
                                 ? scene_name[g_line_pd.scene_last] : "?";
 
             (void)snprintf(line, sizeof(line),
-                           "[L] %s e%s s%s L%s R%s sd%+d sc=%s cd%+d ln%u rt%u lv%s\r\n",
+                           "[L%s] %s e%s s%s L%s R%s sd%+d sc=%s cd%+d\r\n",
+                           BLE_BUILD_TAG,
                            mode_tag,
                            BleTask_Fmt1(b1, sizeof(b1), g_line_pd.error),
                            BleTask_Fmt1(b2, sizeof(b2), g_line_pd.steer),
@@ -435,11 +472,7 @@ static void BleTask_DumpPid(void)
                            BleTask_Fmt1(b4, sizeof(b4), g_line_pd.right_target),
                            (int)g_line_pd.search_dir,
                            sname,
-                           (int)g_line_pd.corner_dir,
-                           (unsigned int)g_gray.scene_left,
-                           (unsigned int)g_gray.scene_right,
-                           BleTask_Fmt1(b6, sizeof(b6),
-                                        g_gray.last_valid_mm * 0.1f));
+                           (int)g_line_pd.corner_dir);
         }
     }
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
@@ -545,7 +578,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-25e (built " __DATE__ " " __TIME__ ")\r\n");
+    BleTask_Print("[VER] line-follower 2025-10-25j (built " __DATE__ " " __TIME__ ")\r\n");
     BleTask_Print("[BleTask] X=stop I=scan I2C\r\n");
 
     /* 同步一次连接状态，避免把"上电时已连接"误报成一次新连接 */
@@ -641,7 +674,7 @@ static void BleTask_Main(void *argument)
                      * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
                      * 放在这里就能保证每次连接都能确认。
                      */
-                    BleTask_Print("[VER] line-follower 2025-10-25e (built "
+                    BleTask_Print("[VER] line-follower 2025-10-25j (built "
                                   __DATE__ " " __TIME__ ")\r\n");
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");
                 }
