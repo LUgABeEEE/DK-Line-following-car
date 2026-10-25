@@ -49,24 +49,61 @@ static float LinePD_ErrorLimit(void)
 }
 
 /* 把两个轮子的目标速度交给内环，并立即执行一次速度环 */
-static void LinePD_ApplyWheelSpeeds(const Line_PD_t *pd)
+static void LinePD_ApplyWheelSpeeds(Line_PD_t *pd)
 {
-    float left_speed  = pd->speed + pd->steer;
-    float right_speed = pd->speed - pd->steer;
+    /*
+     * ⚠️ 差速分配的方向 —— 这里曾经写反过，导致车一偏就朝更偏的方向冲出去。
+     *
+     * 【物理铁律】
+     *   差速驱动要往哪边转，【哪边的轮子就要慢下来】：
+     *       想左转 -> 左轮慢、右轮快
+     *       想右转 -> 左轮快、右轮慢
+     *
+     * 【符号推导】
+     *   error > 0 表示线在传感器【左侧】（Gray 的约定是左正右负）。
+     *   线在左边，说明车往右偏了，需要【向左转】。
+     *   向左转 = 左轮慢、右轮快，所以：
+     *       left_speed  = base - steer
+     *       right_speed = base + steer
+     *
+     * 【原来的错误写法】
+     *       left_speed  = base + steer
+     *   steer 为正时左轮反而加速，车向右转，越偏越远 —— 正反馈。
+     *   实测表现：车放上赛道一开始就朝一个方向冲出去。
+     */
+    float left_speed  = pd->speed + LINE_STEER_DIR * pd->steer;
+    float right_speed = pd->speed - LINE_STEER_DIR * pd->steer;
 
     /*
-     * 1. 先按整体速度上限夹一次，防止"基础速度 + 差速量"顶破内环量程
-     * 2. 再按差速限幅夹一次。因为 |steer| <= diff_limit，夹完必然满足
-     *    |左右之差| <= diff_limit，内侧轮不会被反向拖成倒转。
-     *    默认 diff_limit(25) < base_speed(30)，所以内侧轮最慢只会到 0，不会反转。
+     * 只按【内环允许的目标速度上限】夹一次。
+     *
+     * ⚠️ 原来的代码这里还多夹了一次 diff_limit，那是错的：
+     *    diff_limit 限制的是"差速量 steer"（在第 6 步已经夹过了），
+     *    不是车轮的绝对速度。
+     *
+     *    以 base_speed=30、diff_limit=25 为例：
+     *      直行 steer=0  ->  left=right=30  会被夹成 25，车速直接掉 17%
+     *      转弯 steer=23 ->  left=53 夹成 25、right=7
+     *                        内侧/外侧都跑不到该有的速度，平均速度只剩 16
+     *
+     *    表现就是：车能走，但明显比设定慢，转弯也不利索。
+     *
+     * 现在的做法：
+     *    steer 已经限幅到 ±diff_limit，所以 |left-right| <= 2*diff_limit，
+     *    差速本身是安全的；再按 speed_limit 夹一次就够了。
      */
     left_speed  = LinePD_Clamp(left_speed,  pd->speed_limit);
     right_speed = LinePD_Clamp(right_speed, pd->speed_limit);
-    left_speed  = LinePD_Clamp(left_speed,  pd->diff_limit);
-    right_speed = LinePD_Clamp(right_speed, pd->diff_limit);
 
-    Speed_PID_Update(MOTOR_A, left_speed);
-    Speed_PID_Update(MOTOR_B, right_speed);
+    /*
+     * 只保存目标，不在这里驱动速度环！
+     *
+     * 内环由 ControlTask 的 20ms 节拍单独驱动，
+     * 这样速度环保持 50Hz、循迹环保持 10Hz，各自独立。
+     * 详见 LinePD.h 里 left_target 字段的说明。
+     */
+    pd->left_target  = left_speed;
+    pd->right_target = right_speed;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -105,6 +142,9 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->lost_count     = 0U;
     pd->line_lost      = 0U;
     pd->first_run      = 1U;
+    pd->search_ms      = 0U;
+    pd->left_target    = 0.0f;
+    pd->right_target   = 0.0f;
 }
 
 void LinePD_SetGains(Line_PD_t *pd, float kp, float kd, float base_speed)
@@ -136,9 +176,8 @@ void LinePD_Stop(Line_PD_t *pd)
 /* 核心                                                                        */
 /* ------------------------------------------------------------------------- */
 
-uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2c)
+uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 {
-    uint8_t gray_result;
     float   error;
     float   derivative;
     float   steer;
@@ -157,10 +196,14 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
         return LINE_PD_ERR_PERIOD;
     }
 
-    /* ---------- 1. 读传感器（内部已算好加权质心位置） ---------- */
-    gray_result = Gray_Update(gray, hi2c);
-
-    if ((gray_result == 1U) || (gray_result == 2U))
+    /* ---------- 1. 检查传感器数据是否新鲜 ---------- */
+    /*
+     * 传感器由调用者在 20ms 节拍里读好（比控制律的 40ms 快一倍），
+     * 这里只检查最近一次读取有没有连续失败。
+     * fail_count 在 Gray_Update 里成功一次就清零，
+     * 所以它反映的是"当前是否处于通信故障状态"。
+     */
+    if (gray->fail_count >= GRAY_FAIL_LIMIT)
     {
         /* I2C 通信失败：保持上一拍的电机指令不变，不拿脏数据去开车 */
         pd->line_lost = 1U;
@@ -168,9 +211,91 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
     }
 
     /* ---------- 2. 取误差并按线性区限幅 ---------- */
+#if (LINE_STOP_ON_ALL_BLACK != 0)
+    if (pd->all_count >= LINE_ALL_CONFIRM_CYCLES)
+    {
+        /*
+         * 几乎全部通道都激活 —— 横向黑线 / 终点标记 / 传感器离开赛道。
+         * 停车是唯一安全的处理方式：此时位置解算没有意义
+         * （整片都是"线"），继续按质心开车必然乱跑。
+         */
+        const char *msg = "[LinePD] all-black, stop\r\n";
+
+        Speed_PID_StopAll();
+        pd->left_target  = 0.0f;
+        pd->right_target = 0.0f;
+        pd->steer        = 0.0f;
+        pd->speed        = 0.0f;
+        pd->line_lost    = 1U;
+        pd->search_ms    = 0U;
+        pd->search_dir   = 0;
+
+        HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)strlen(msg), 20U);
+        return LINE_PD_ERR_LOST;
+    }
+#endif
+
     error_limit = LinePD_ErrorLimit();
     error = LinePD_Clamp(Gray_GetPositionCm(gray), error_limit);
     pd->error = error;
+
+    /*
+     * ---- 场景处理 ----
+     *
+     * 全部判据来自 gray->scene（可观测的通道状态），不含推断。
+     *
+     *   ALL   : 横向黑线 / 终点 / 悬空 -> 停车
+     *   SIDE  : 直角弯 -> 额外减速 + 放宽差速
+     *   FORK  : 锐角弯 -> 记录弯道方向，丢线时朝它搜索
+     */
+    pd->scene_last = (uint8_t)gray->scene;
+
+    /* --- ALL：确认后停车 --- */
+    if (gray->scene == GRAY_SCENE_ALL)
+    {
+        if (pd->all_count < 0xFFU)
+        {
+            pd->all_count++;
+        }
+    }
+    else
+    {
+        pd->all_count = 0U;
+    }
+
+    /* --- SIDE：直角弯 --- */
+    if ((gray->scene == GRAY_SCENE_SIDE_L) ||
+        (gray->scene == GRAY_SCENE_SIDE_R))
+    {
+        if (pd->side_count < 0xFFU)
+        {
+            pd->side_count++;
+        }
+        pd->side_dir = (gray->scene == GRAY_SCENE_SIDE_L) ? 1 : -1;
+    }
+    else
+    {
+        pd->side_count = 0U;
+    }
+
+    /* --- FORK：锐角弯，锁存方向 --- */
+    if (gray->scene == GRAY_SCENE_FORK)
+    {
+        if (gray->corner_dir != 0)
+        {
+            pd->corner_dir = gray->corner_dir;
+            pd->fork_hold  = LINE_FORK_HOLD_CYCLES;
+        }
+    }
+    else if (pd->fork_hold > 0U)
+    {
+        pd->fork_hold--;
+        if (pd->fork_hold == 0U)
+        {
+            pd->corner_dir = 0;
+        }
+    }
+
 
     /* ---------- 3. 丢线计数 ---------- */
     if (Gray_IsLineLost(gray) != 0U)
@@ -204,7 +329,22 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
 
     /* ---------- 5. PD 运算 + 差速限幅 ---------- */
     steer = (pd->kp * error) + (pd->kd * derivative);
-    steer = LinePD_Clamp(steer, pd->diff_limit);
+    {
+        /*
+         * 直角弯时临时放宽差速限幅：
+         * 整半边全是线，说明车头已经严重偏出，需要比平时更大的差速
+         * 才能把车身拧过来。放宽是有依据的（明确的 SIDE 场景），
+         * 不是无条件的。
+         */
+        float steer_limit = pd->diff_limit;
+
+        if (pd->side_count >= LINE_SIDE_CONFIRM_CYCLES)
+        {
+            steer_limit *= LINE_SIDE_DIFF_BOOST;
+        }
+
+        steer = LinePD_Clamp(steer, steer_limit);
+    }
     pd->steer = steer;
 
     /* ---------- 6. 弯道减速：偏离越大跑得越慢，给转向留时间 ---------- */
@@ -220,37 +360,240 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
         /* 线性插值：正中时为 1.0，偏到极限时为 LINE_CURVE_SLOW_MIN */
         slow_factor = 1.0f - (normalized * (1.0f - LINE_CURVE_SLOW_MIN));
     }
-    pd->speed = pd->base_speed * slow_factor;
+    /*
+     * 基础速度带起步斜坡。
+     *
+     * 目标值 = base_speed × 弯道减速系数；
+     * 实际值 pd->speed 每拍最多变化 (斜率 × 外环周期)，
+     * 这样从 0 起步或者中途调大 LBAS 都不会出现阶跃。
+     */
+    {
+        float target_speed = pd->base_speed * slow_factor;
+        float step = LINE_SPEED_RAMP_CMS_PER_SEC
+                     * ((float)LINE_PD_PERIOD_MS / 1000.0f);
+
+        if (pd->speed < target_speed)
+        {
+            pd->speed += step;
+            if (pd->speed > target_speed)
+            {
+                pd->speed = target_speed;
+            }
+        }
+        else if (pd->speed > target_speed)
+        {
+            pd->speed -= step;
+            if (pd->speed < target_speed)
+            {
+                pd->speed = target_speed;
+            }
+        }
+    }
 
     /* ---------- 7. 丢线超时处理 ---------- */
     if (pd->lost_count > LINE_LOST_TOLERANCE)
     {
         pd->line_lost = 1U;
 
-#if (LINE_STOP_IF_LINE_LOST != 0)
+        /*
+         * 【注意顺序：必须先判断"是否刚进入"，再累加计时】
+         *
+         * 之前的写法是"先累加 search_ms，再判断 search_ms==0"，
+         * 结果 search_ms 在判断前就变成了 40，条件永远不成立，
+         * 方向锁存代码从来没执行过 —— search_dir 一直是 0，
+         * 于是每次都走进停车分支，表现为"一丢线就停"。
+         */
+        {
+            uint8_t just_entered = (pd->search_ms == 0U) ? 1U : 0U;
+
+        /* 累计搜索时间（外环节拍固定，累加即可） */
+        if (pd->search_ms < 0xFFFFU)
+        {
+            pd->search_ms = (uint16_t)(pd->search_ms + LINE_PD_PERIOD_MS);
+        }
+
+#if (LINE_SEARCH_ENABLE != 0)
+        /*
+         * ---- 刚进入搜索：锁定方向 ----
+         *
+         * 只在刚进入的那一拍锁存，之后不再改变。
+         * 这样即使斑块扫过、偶尔又看到一点线，也不会把方向翻掉。
+         */
+        if (just_entered != 0U)
+        {
+            /*
+             * 搜索方向的选择，按可靠度排序：
+             *
+             *   1. 分叉方向（corner_dir）
+             *      锐角弯时【直接观测到】的弯道方向，不受过冲影响。
+             *      这是最可靠的数据来源。
+             *
+             *   2. 最后有效位置的符号
+             *      常规丢线时的依据。急弯过冲时可能被误导，
+             *      但它是实测值，不是推断。
+             *
+             * 两者都失效时由双向扫描兜底。
+             */
+            int8_t dir = 0;
+
+            if ((pd->fork_hold > 0U) && (pd->corner_dir != 0))
+            {
+                /* 来源1：分叉观测到的弯道方向，最可靠 */
+                dir = pd->corner_dir;
+            }
+            else
+            {
+                /* 来源2：最后一次有效位置，但要求偏离足够明显 */
+                float last_cm  = gray->last_valid_mm * 0.1f;
+                float abs_last = (last_cm < 0.0f) ? -last_cm : last_cm;
+
+                if (abs_last >= LINE_SEARCH_MIN_INFO_CM)
+                {
+                    dir = (last_cm > 0.0f) ? 1 : -1;
+                }
+                else
+                {
+                    /*
+                     * 来源3：没有任何方向信息。
+                     *
+                     * 注意这里【不是放弃搜索】—— 双向扫描是系统性的，
+                     * 会依次覆盖两个方向，起点方向不影响最终能否找到。
+                     * 所以这里只决定"先扫哪边"，带一个明确的默认值，
+                     * 而不是随机的或者隐含的。
+                     */
+                    dir = (int8_t)LINE_SEARCH_DEFAULT_DIR;
+                }
+            }
+
+            pd->search_dir = dir;
+        }
+
+#if (LINE_SEARCH_BIDIRECTIONAL != 0)
+        if ((pd->search_dir != 0) &&
+            (pd->search_ms <= (uint16_t)(LINE_SEARCH_TIMEOUT_MS * 2U)))
+#else
+        if ((pd->search_dir != 0) &&
+            (pd->search_ms <= LINE_SEARCH_TIMEOUT_MS))
+#endif
+        {
+            /*
+             * ---- 搜索模式：原地慢转找线 ----
+             *
+             * 转向方向由【最后看到线的方向】决定：
+             *   Gray 模块丢线时会把位置固定成"最后偏离方向的满幅值"，
+             *   所以 pd->error 的符号就是线最后所在的一侧。
+             *
+             * error > 0 表示线在左 -> 要向左转 -> 右轮前进、左轮反转。
+             * 这里直接按"左转/右转"来分配，不走 steer 公式，
+             * 因为搜索需要的是【确定的方向和幅度】，不是比例控制。
+             */
+            float v_outer = LINE_SEARCH_SPEED_CMS;
+            float v_inner = -LINE_SEARCH_SPEED_CMS * LINE_SEARCH_INNER_RATIO;
+
+            /*
+             * 决定这一拍的方向。
+             *
+             * 单向模式：一直用进入搜索时锁定的方向。
+             * 双向模式：前半程用锁存方向，后半程自动反方向。
+             *           这样即使初始方向猜错，也能在第二阶段扫到线。
+             */
+            int8_t  dir_now = pd->search_dir;
+
+#if (LINE_SEARCH_BIDIRECTIONAL != 0)
+            if (pd->search_ms > LINE_SEARCH_TIMEOUT_MS)
+            {
+                dir_now = (int8_t)(-pd->search_dir);
+            }
+#endif
+
+            uint8_t turn_left = (dir_now >= 0) ? 1U : 0U;
+
+            if (turn_left != 0U)
+            {
+                /* 向左转：右轮前进，左轮反转 */
+                pd->left_target  = v_inner;
+                pd->right_target = v_outer;
+            }
+            else
+            {
+                /* 向右转：左轮前进，右轮反转 */
+                pd->left_target  = v_outer;
+                pd->right_target = v_inner;
+            }
+
+            pd->steer = 0.0f;
+            pd->speed = 0.0f;
+
+            return LINE_PD_ERR_LOST;
+        }
+#endif
+        }
+
+        /*
+         * ---- 搜索超时（或搜索被禁用）：停车 ----
+         *
+         * 已经转了 LINE_SEARCH_TIMEOUT_MS 还没找到线，
+         * 说明线真的不在附近了。继续转下去只会让车跑出赛道或撞墙。
+         */
         {
             const char *msg = "[LinePD] line lost, stop\r\n";
             Speed_PID_StopAll();
+
+            /*
+             * 必须把目标速度也清零！
+             * Speed_PID_StopAll() 只复位 PID 内部状态，
+             * 内环节拍每 20ms 会拿 pd->left_target/right_target 重新驱动，
+             * 不清的话判了丢线车却还在跑。
+             */
+            pd->left_target  = 0.0f;
+            pd->right_target = 0.0f;
+            pd->steer        = 0.0f;
+            pd->speed        = 0.0f;
+
             HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)strlen(msg), 20U);
         }
-#else
-        /*
-         * 搜索模式：保持转向（Gray 模块在丢线时会给出"最后偏离方向"的满幅误差），
-         * 但把前进速度压到最低，让车尽量在原地附近找回线。
-         */
-        {
-            float low_speed = pd->base_speed * LINE_CURVE_SLOW_MIN * 0.5f;
-            float left_speed  = low_speed + steer;
-            float right_speed = low_speed - steer;
-
-            left_speed  = LinePD_Clamp(left_speed,  pd->speed_limit);
-            right_speed = LinePD_Clamp(right_speed, pd->speed_limit);
-            Speed_PID_Update(MOTOR_A, left_speed);
-            Speed_PID_Update(MOTOR_B, right_speed);
-        }
-#endif
 
         return LINE_PD_ERR_LOST;
+    }
+
+    /*
+     * ---- 确认"真的找回来了" ----
+     *
+     * 要求连续 LINE_RECOVER_CYCLES 拍都看到线才清空搜索状态。
+     * 锐角弯里斑块扫过时经常只看到一拍，如果立刻退出搜索，
+     * 下一拍又丢 -> 搜索里程重置 -> 方向重新锁存 -> 反复抽搐。
+     */
+    if (pd->recover_count < 0xFFU)
+    {
+        pd->recover_count++;
+    }
+
+    if (pd->recover_count >= LINE_RECOVER_CYCLES)
+    {
+        /*
+         * 如果刚才确实在搜索（search_ms > 0），说明是靠搜索找回来的。
+         * 打印搜索用掉的毫秒数 —— 用它就能知道锐角弯实际需要转多少度，
+         * 从而把 LINE_SEARCH_TIMEOUT_MS 定在有依据的数值上。
+         *
+         * 换算：转角 = search_ms / 1000 × 183 度
+         */
+        if (pd->search_ms > 0U)
+        {
+            char msg[64];
+            int  len = snprintf(msg, sizeof(msg),
+                                "[LinePD] search ok, %ums\r\n",
+                                (unsigned int)pd->search_ms);
+
+            if (len > 0)
+            {
+                HAL_UART_Transmit(&huart2, (uint8_t *)msg,
+                                  (uint16_t)len, 20U);
+            }
+        }
+
+        pd->search_ms   = 0U;
+        pd->search_dir  = 0;
+        pd->recover_count = LINE_RECOVER_CYCLES;
     }
 
     /* ---------- 8. 正常，输出到内环 ---------- */
@@ -322,13 +665,14 @@ void LinePD_VerifySigns(Line_PD_t *pd, Gray_Sensor_t *gray,
 
     for (i = 0U; i < 200U; i++)     /* 200 x 100ms = 20 秒 */
     {
+        uint8_t gray_result;
         float   pos_cm;
         float   error;
-        uint8_t gray_result;
         const char *verdict;
 
         HAL_Delay(LINE_PD_PERIOD_MS);
 
+        /* 这是独立的自检函数，自己读传感器，与 20ms 采样节拍无关 */
         gray_result = Gray_Update(gray, hi2c);
 
         if ((gray_result == 1U) || (gray_result == 2U))
@@ -462,7 +806,7 @@ void LinePD_TestSequence(Line_PD_t *pd, Gray_Sensor_t *gray,
         HAL_Delay(LINE_PD_PERIOD_MS);
         elapsed_ms += LINE_PD_PERIOD_MS;
 
-        result = LinePD_Update(pd, gray, hi2c);
+        result = LinePD_Update(pd, gray);
 
         {
             float left_target  = pd->speed + pd->steer;

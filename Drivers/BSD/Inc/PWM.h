@@ -26,16 +26,7 @@
 /* TIM1 的自动重装载值 ARR。必须与 CubeMX 里 Counter Period 填的数一致。 */
 #define MOTOR_PWM_PERIOD        99U
 
-/* 占空比行程：-MOTOR_DUTY_MAX ~ +MOTOR_DUTY_MAX，符号代表方向。
- *
- * ⚠️ 电压匹配：本车电机是 6V 的 N20，电池是 2S 7.4V。
- *   TB6612 输出的是「占空比 × VBAT」的平均电压，所以：
- *     占空比  81% ≈ 7.4 × 0.81 = 6.0V（正好额定）
- *     占空比 100% ≈ 7.4V（超压约 23%）
- *
- *   竞速单次只跑几十秒，用满 100 还能多拿约 1/4 转速，一般没事；
- *   若训练时发现电机发烫、换向火花明显，把它改成 81 让软件限压。
- */
+/* 占空比行程：-MOTOR_DUTY_MAX ~ +MOTOR_DUTY_MAX，符号代表方向。 */
 #define MOTOR_DUTY_MAX          100
 
 /* 电机编号 */

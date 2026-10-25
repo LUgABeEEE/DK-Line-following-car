@@ -40,7 +40,19 @@ static TaskHandle_t s_task_handle = NULL;
  * 上电默认进入【速度环测试】——当前阶段的目标就是调内环。
  */
 volatile uint8_t g_ctrl_mode       = CTRL_MODE_SPEED_TEST;
-volatile float   g_speed_test_target = 20.0f;
+volatile float   g_speed_test_target = 0.0f;
+
+/*
+ * 斜坡化之后的目标速度（内部状态）。
+ * 实际下发给内环的是这个值，而不是 g_speed_test_target 的阶跃值。
+ */
+static float s_ramped_target = 0.0f;
+
+/*
+ * 上一拍的模式，用于检测"刚切换到 STOP"这个瞬间。
+ * 进入停车模式时需要清一次 PID 状态，之后就不必每拍都清。
+ */
+static uint8_t s_last_mode = CTRL_MODE_SPEED_TEST;
 
 /* ------------------------------------------------------------------------- */
 /* 任务主体                                                                    */
@@ -68,35 +80,144 @@ static void ControlTask_Main(void *argument)
     {
         TickType_t now;
 
+        /*
+         * 模式切换的一次性处理。
+         *
+         * 只处理"刚切过来"这一拍，之后 s_last_mode 就更新了。
+         */
+        if (g_ctrl_mode != s_last_mode)
+        {
+            if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
+            {
+                /*
+                 * 刚进入循迹：清外环历史。
+                 *
+                 * 为什么必须清：外环的微分项是 (error - last_error)/dt。
+                 * 如果从 SPEED_TEST 直接切过来，last_error 还停在上次
+                 * 循迹结束时的旧值，first_run 也已经是 0，
+                 * 那么第一拍会算出一个巨大的微分 ——
+                 * steer 瞬间打满差速，车会猛打一下方向。
+                 *
+                 * LinePD_Reset 会把 first_run 重新置 1，
+                 * 下一拍走"首拍不做微分"的保护分支。
+                 */
+                LinePD_Reset(&g_line_pd);
+            }
+        }
+
         /* ================= 节拍 1：内环速度环，20ms ================= */
         Encoder_UpdateSpeed();
+
+        /*
+         * ---- 传感器采样：每个 20ms 节拍都读 ----
+         *
+         * 控制律仍然是 40ms（下面节拍 2），但采样提到 50Hz。
+         * 原因：40ms 在 45cm/s 时车已移动 18mm，跨过 2.6 个通道间距，
+         * 期间发生的"直角弯单侧全黑""锐角弯瞬间分叉"全都看不到。
+         *
+         * 只在循迹模式读（其它模式不关心），减少无谓的总线占用。
+         * 失败不特殊处理：Gray 内部会累计 fail_count，
+         * LinePD_Update 开头会检查它。
+         */
+        if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
+        {
+            (void)Gray_Update(&g_gray, &hi2c1);
+        }
 
         switch (g_ctrl_mode)
         {
         case CTRL_MODE_LINE_FOLLOW:
             /*
-             * 双环模式：外环 LinePD_Update（在外环节拍里）会调用
-             * Speed_PID_Update 把左右轮目标写进内环。
-             * 这里不能重复调用，否则一周期跑两次 PID，积分步长翻倍。
+             * 双环模式：外环只负责"算目标"，这里负责"跟目标"。
+             *
+             * 外环 LinePD_Update 每 100ms 跑一次，把左右轮目标速度
+             * 写进 g_line_pd.left_target / right_target；
+             * 内环在这里以 20ms 的节奏持续追踪这两个目标。
+             *
+             * 两个环各跑各的周期，互不牵制：
+             *   内环 50Hz —— 保证轮速跟得上
+             *   外环 10Hz —— 保证转向指令有足够带宽
+             *
+             * （以前外环里直接调 Speed_PID_Update，导致速度环也被
+             *   拖到 10Hz，轮子跟不上目标，循迹只要有一点弯就跟不住。）
              */
+            (void)Speed_PID_Update(MOTOR_A, g_line_pd.left_target);
+            (void)Speed_PID_Update(MOTOR_B, g_line_pd.right_target);
             break;
 
         case CTRL_MODE_SPEED_TEST:
             /*
-             * 速度环测试：两轮追踪同一个目标速度。
-             * 内环每 20ms 跑一次，编码器反馈闭环。
+             * 速度环测试：两轮追踪同一个目标速度，带加减速斜坡。
+             *
+             * 每 20ms 最多变化 SPEED_RAMP_CMS_PER_SEC * 0.02 = 0.8 cm/s。
+             * 目标 20 cm/s 大约 0.5 秒爬到，避免阶跃起步时两轮不同步。
              */
-            (void)Speed_PID_Update(MOTOR_A, g_speed_test_target);
-            (void)Speed_PID_Update(MOTOR_B, g_speed_test_target);
+            {
+                float step = SPEED_RAMP_CMS_PER_SEC
+                           * ((float)SPEED_PID_PERIOD_MS / 1000.0f);
+
+                if (s_ramped_target < g_speed_test_target)
+                {
+                    s_ramped_target += step;
+                    if (s_ramped_target > g_speed_test_target)
+                    {
+                        s_ramped_target = g_speed_test_target;
+                    }
+                }
+                else if (s_ramped_target > g_speed_test_target)
+                {
+                    s_ramped_target -= step;
+                    if (s_ramped_target < g_speed_test_target)
+                    {
+                        s_ramped_target = g_speed_test_target;
+                    }
+                }
+                else
+                {
+                    /* 已在目标值，无需调整 */
+                }
+
+                (void)Speed_PID_Update(MOTOR_A, s_ramped_target);
+                (void)Speed_PID_Update(MOTOR_B, s_ramped_target);
+            }
             break;
 
         case CTRL_MODE_STOP:
         default:
-            /* 停车：目标锁 0，内环把电机拉回静止 */
-            (void)Speed_PID_Update(MOTOR_A, 0.0f);
-            (void)Speed_PID_Update(MOTOR_B, 0.0f);
+            /*
+             * 停车：直接用 Motor_Brake() 短接电机两端制动，
+             * 不走 PID。
+             *
+             * 为什么不用 Speed_PID_Update(0)：
+             *   PID 的积分项是"历史载荷"的累积。以 15 cm/s 巡航时
+             *   积分可能已经到 20 左右。停车时 Target=0，但
+             *     out = KFF*0 + KP*(-measure) + 积分
+             *         = 0 - 12 + 20 = +8
+             *   仍然是正数，电机继续往前爬 —— 表现就是"发停车命令但车不停"。
+             *
+             *   而且积分分离会"帮倒忙"：停车瞬间误差很大（负数），
+             *   积分分离会冻结积分，残留的正积分长时间不衰减。
+             *
+             * 硬制动不受这些影响：直接把 H 桥下桥臂全开，
+             * 电机绕组短接，靠反电动势制动，立刻停住并保持。
+             */
+            if (s_last_mode != CTRL_MODE_STOP)
+            {
+                /*
+                 * 只在刚进入停车模式时清一次 PID 状态。
+                 * 清完积分和微分历史，下次启动才从干净状态开始，
+                 * 不会带着巡航时的残留量猛冲。
+                 */
+                Speed_PID_Reset(MOTOR_A);
+                Speed_PID_Reset(MOTOR_B);
+            }
+
+            s_ramped_target = 0.0f;
+            Motor_Brake();
             break;
         }
+
+        s_last_mode = g_ctrl_mode;
 
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(SPEED_PID_PERIOD_MS));
 
@@ -109,7 +230,7 @@ static void ControlTask_Main(void *argument)
 if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
             {
                 /* 双环模式：外环算差速并写入内环目标 */
-                (void)LinePD_Update(&g_line_pd, &g_gray, &hi2c1);
+                (void)LinePD_Update(&g_line_pd, &g_gray);
             }
             else
             {
@@ -167,10 +288,13 @@ if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
                     }
                     else if ((key == KEY_2) && (event == KEY_EVENT_LONG_PRESS))
                     {
-                        /* 长按 KEY2：急停。切换回停车模式，电机目标锁 0 */
-                        g_ctrl_mode = CTRL_MODE_STOP;
-                        Speed_PID_StopAll();
-                        LinePD_Stop(&g_line_pd);
+                        /*
+                         * 长按 KEY2：急停（硬制动）。
+                         *
+                         * 和蓝牙 X 命令走同一个函数，保证两条路径行为一致：
+                         *   切停车模式 + 清 PID 积分 + 立即制动 + 停循迹
+                         */
+                        ControlTask_RequestStop();
                         Led_Off(LED_1);
                     }
                 }
@@ -219,14 +343,63 @@ uint8_t ControlTask_Init(void)
 void ControlTask_RequestStop(void)
 {
     /*
-     * 只改模式，不直接调 Speed_PID_StopAll()。
+     * 急停的统一入口。蓝牙 X 命令和 KEY2 长按都走这里，
+     * 保证两条路径的停车行为完全一致。
      *
-     * 原因：本函数可能被低优先级的蓝牙任务调用，而控制任务（优先级 3）
-     * 每 20ms 会按 g_ctrl_mode 重新下发电机指令。
-     * 如果这里直接 StopAll，控制任务下一拍就会用旧目标覆盖回去。
-     * 改模式才是最可靠的做法——控制任务看到 STOP 会持续输出 0。
+     * 四个动作缺一不可：
+     *
+     *   1. 切模式 —— 这是最关键的一步。
+     *      控制任务每 20ms 按 g_ctrl_mode 重新下发指令，
+     *      只清 PID 而不改模式的话，下一拍就会被旧目标覆盖回去。
+     *      改成 STOP 后，控制任务会持续调用 Motor_Brake() 保持制动。
+     *
+     *   2. 清 PID 积分 —— 积分是"历史载荷"的累积量。
+     *      巡航时积分可能已到 20 左右，不清掉的话即使目标为 0，
+     *      out = KP*(-measure) + 积分 仍可能是正数，电机继续往前爬。
+     *
+     *   3. 停循迹 —— 停掉外环 PD，避免它继续往下写目标速度。
+     *
+     *   4. 立即制动 —— 不等内环下一拍（最多 20ms），马上短接电机绕组。
+     *
+     * 说明：本函数可能被蓝牙任务（优先级 2）调用，与控制任务（优先级 3）
+     * 存在极小的并发窗口。但制动是幂等操作（写同样的 GPIO 状态），
+     * 最坏情况只是控制任务下一拍再写一次相同值，没有副作用。
      */
     g_ctrl_mode = CTRL_MODE_STOP;
+
+    /*
+     * 目标速度也清零。
+     *
+     * 这是"目标即油门"设计的关键一环：
+     * 急停后目标归零，用户必须重新用 KEY2 把速度一档档加上来，
+     * 不会因为残留的目标值在解除停车时突然窜出去。
+     *
+     * 同时也让屏幕上的 T 值立刻变成 0，视觉反馈明确。
+     */
+    g_speed_test_target = 0.0f;
+
+    Speed_PID_Reset(MOTOR_A);
+    Speed_PID_Reset(MOTOR_B);
+
+    /*
+     * 清掉编码器的速度滤波状态。
+     *
+     * Encoder_UpdateSpeed 里对速度做了一阶低通，s_speed_cms[] 会保留
+     * 停车前的值。不清的话，重新启动后的头几拍测速会带着这个旧值，
+     * PID 看到的"实测速度"是错的，起步会顿一下。
+     *
+     * 用 Encoder_ResetFilter 而不是 Encoder_Reset：
+     *   后者会把计数和累计里程也清零，而我们只想清滤波状态。
+     */
+    Encoder_ResetFilter(ENCODER_A);
+    Encoder_ResetFilter(ENCODER_B);
+
+    LinePD_Stop(&g_line_pd);
+
+    /* 斜坡值也归零，下次启动从 0 平滑爬升 */
+    s_ramped_target = 0.0f;
+
+    Motor_Brake();
 }
 
 void ControlTask_RequestSpeedTest(float target_cms)

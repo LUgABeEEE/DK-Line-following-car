@@ -77,8 +77,12 @@ void Speed_PID_Init(void)
          * 积分项自己最多只能把输出顶到满量程，不会无限累积。
          * 第二道防线是下面的"条件积分"。
          */
-        pid->integral_min = pid->output_min;
-        pid->integral_max = pid->output_max;
+        /*
+         * 积分项限幅 = 输出限幅 × SPEED_PID_INTEGRAL_RATIO。
+         * 不让积分单独就能把输出打满，给它留出抗饱和余量。
+         */
+        pid->integral_min = pid->output_min * SPEED_PID_INTEGRAL_RATIO;
+        pid->integral_max = pid->output_max * SPEED_PID_INTEGRAL_RATIO;
 
         /* 默认关闭微分滤波（kd 默认为 0，暂时用不上） */
         pid->d_filter = 1.0f;
@@ -200,6 +204,38 @@ float Speed_PID_Update(uint32_t motor, float target)
     /* ---------- 3. 偏差 ---------- */
     error = target - pid->measure;
 
+    /*
+     * 编码器故障应急：该轮只走前馈，跳过 P/I/D。
+     * 详见 SpeedPID.h 里 SPEED_PID_OPENLOOP_x 的说明。
+     */
+    {
+        uint32_t openloop = 0U;
+
+#if (SPEED_PID_OPENLOOP_A != 0)
+        if (motor == MOTOR_A)
+        {
+            openloop = 1U;
+        }
+#endif
+#if (SPEED_PID_OPENLOOP_B != 0)
+        if (motor == MOTOR_B)
+        {
+            openloop = 1U;
+        }
+#endif
+
+        if (openloop != 0U)
+        {
+            out = pid->kff * target;
+            out = (out > SPEED_OUTPUT_LIMIT) ? SPEED_OUTPUT_LIMIT : out;
+            out = (out < -SPEED_OUTPUT_LIMIT) ? -SPEED_OUTPUT_LIMIT : out;
+            pid->integral = 0.0f;
+            pid->output   = out;
+            Motor_SetOne(motor, out);
+            return out;
+        }
+    }
+
     /* ---------- 4. 微分项：误差的变化率，带低通滤波 ---------- */
     if (s_last_error_valid[motor] == 0U)
     {
@@ -229,7 +265,19 @@ float Speed_PID_Update(uint32_t motor, float target)
         uint8_t pushing_positive = (pid->saturated == 1U) && (error > 0.0f);
         uint8_t pushing_negative = (pid->saturated == 2U) && (error < 0.0f);
 
-        if ((pushing_positive == 0U) && (pushing_negative == 0U))
+        /*
+         * 积分分离：误差过大时暂停积分。
+         *
+         * 起步瞬间误差可达十几 cm/s，这时积分累积得又快又没意义
+         * （反正输出已经被比例项拉满），等误差降下来再开始积分。
+         * 这样能彻底避免"卡住的一路积分打满、挣脱时猛窜"的问题。
+         */
+        float abs_error = (error < 0.0f) ? -error : error;
+        uint8_t integral_enabled =
+            (abs_error < SPEED_PID_INTEGRAL_SEPARATION_CMS) ? 1U : 0U;
+
+        if ((pushing_positive == 0U) && (pushing_negative == 0U) &&
+            (integral_enabled != 0U))
         {
             if (integral_candidate > pid->integral_max)
             {
@@ -293,6 +341,12 @@ float Speed_PID_GetOutput(uint32_t motor)
 {
     Speed_PID_t *pid = Speed_PID_Get(motor);
     return (pid == NULL) ? 0.0f : pid->output;
+}
+
+float Speed_PID_GetIntegral(uint32_t motor)
+{
+    Speed_PID_t *pid = Speed_PID_Get(motor);
+    return (pid == NULL) ? 0.0f : pid->integral;
 }
 
 void Speed_PID_Stop(uint32_t motor)

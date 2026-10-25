@@ -48,7 +48,18 @@
 /* ------------------------------------------------------------------------- */
 
 #define OLED_TASK_PRIORITY          1U
-#define OLED_TASK_STACK_WORDS       320U
+/*
+ * 任务栈深度（字）。320 字 = 1280 字节。
+ *
+ * 为什么从 320 加到 448：
+ *   调参路径里连续用到 dbg[96] + dbg2[128] 两个临时缓冲，
+ *   再加 snprintf 自身约 300 字节的内部用量，320 字已接近危险边缘。
+ *   本项目 configCHECK_FOR_STACK_OVERFLOW = 0，溢出不报警只会静默
+ *   破坏相邻内存（表现为变量莫名其妙不变），所以加一点余量。
+ *
+ * 448 字 = 1792 字节，堆里还够用。
+ */
+#define OLED_TASK_STACK_WORDS       448U
 #define OLED_TASK_PERIOD_MS         100U
 
 /*

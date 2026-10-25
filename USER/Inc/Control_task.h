@@ -82,6 +82,24 @@ extern volatile uint8_t g_ctrl_mode;
  */
 extern volatile float g_speed_test_target;
 
+/*
+ * 目标速度的爬升速率，单位 cm/s²。
+ *
+ * 为什么需要斜坡：
+ *   直接把目标从 0 阶跃到 20 cm/s，误差瞬间就是 20，比例项立刻把输出
+ *   推到很大。而硬地面上两轮的静摩擦不同，可能一个先挣脱一个还卡着，
+ *   卡住那一路的误差会持续很久——即便有积分分离，两轮启动时刻不同步
+ *   依然会造成短暂的差速，表现就是"起步原地转圈"。
+ *
+ *   加减速斜坡让目标缓缓上升，两轮都在低占空比下慢慢克服静摩擦，
+ *   起步过程同步得多。
+ *
+ * 取值 40 的依据：
+ *   20 cm/s 目标约 0.5 秒爬到，既不会肉到影响操控，
+ *   又足够让两轮同步启动。
+ */
+#define SPEED_RAMP_CMS_PER_SEC      40.0f
+
 /* 便捷接口：请求停车 / 请求进入速度环测试 */
 void ControlTask_RequestStop(void);
 void ControlTask_RequestSpeedTest(float target_cms);
