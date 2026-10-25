@@ -503,6 +503,13 @@ static void BleTask_Main(void *argument)
     BleTask_Print("\r\n[BleTask] started, period=%ums\r\n",
                   (unsigned int)BLE_TASK_PERIOD_MS);
     BleTask_Print("[BleTask] motor control: NONE (handled by ControlTask)\r\n");
+    /*
+     * 固件版本标记。
+     *
+     * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
+     * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
+     */
+    BleTask_Print("[VER] line-follower 2025-10-25c\r\n");
     BleTask_Print("[BleTask] X=stop I=scan I2C\r\n");
 
     /* 同步一次连接状态，避免把"上电时已连接"误报成一次新连接 */

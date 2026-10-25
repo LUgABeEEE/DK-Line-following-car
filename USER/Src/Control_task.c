@@ -108,6 +108,22 @@ static void ControlTask_Main(void *argument)
         /* ================= 节拍 1：内环速度环，20ms ================= */
         Encoder_UpdateSpeed();
 
+        /*
+         * ---- 传感器采样：每个 20ms 节拍都读 ----
+         *
+         * 控制律仍然是 40ms（下面节拍 2），但采样提到 50Hz。
+         * 原因：40ms 在 45cm/s 时车已移动 18mm，跨过 2.6 个通道间距，
+         * 期间发生的"直角弯单侧全黑""锐角弯瞬间分叉"全都看不到。
+         *
+         * 只在循迹模式读（其它模式不关心），减少无谓的总线占用。
+         * 失败不特殊处理：Gray 内部会累计 fail_count，
+         * LinePD_Update 开头会检查它。
+         */
+        if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
+        {
+            (void)Gray_Update(&g_gray, &hi2c1);
+        }
+
         switch (g_ctrl_mode)
         {
         case CTRL_MODE_LINE_FOLLOW:
@@ -214,7 +230,7 @@ static void ControlTask_Main(void *argument)
 if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
             {
                 /* 双环模式：外环算差速并写入内环目标 */
-                (void)LinePD_Update(&g_line_pd, &g_gray, &hi2c1);
+                (void)LinePD_Update(&g_line_pd, &g_gray);
             }
             else
             {

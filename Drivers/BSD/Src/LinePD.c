@@ -176,9 +176,8 @@ void LinePD_Stop(Line_PD_t *pd)
 /* 核心                                                                        */
 /* ------------------------------------------------------------------------- */
 
-uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2c)
+uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 {
-    uint8_t gray_result;
     float   error;
     float   derivative;
     float   steer;
@@ -197,10 +196,14 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
         return LINE_PD_ERR_PERIOD;
     }
 
-    /* ---------- 1. 读传感器（内部已算好加权质心位置） ---------- */
-    gray_result = Gray_Update(gray, hi2c);
-
-    if ((gray_result == 1U) || (gray_result == 2U))
+    /* ---------- 1. 检查传感器数据是否新鲜 ---------- */
+    /*
+     * 传感器由调用者在 20ms 节拍里读好（比控制律的 40ms 快一倍），
+     * 这里只检查最近一次读取有没有连续失败。
+     * fail_count 在 Gray_Update 里成功一次就清零，
+     * 所以它反映的是"当前是否处于通信故障状态"。
+     */
+    if (gray->fail_count >= GRAY_FAIL_LIMIT)
     {
         /* I2C 通信失败：保持上一拍的电机指令不变，不拿脏数据去开车 */
         pd->line_lost = 1U;
@@ -211,6 +214,22 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
     error_limit = LinePD_ErrorLimit();
     error = LinePD_Clamp(Gray_GetPositionCm(gray), error_limit);
     pd->error = error;
+
+    /*
+     * ---- 位置趋势 ----
+     * pos_slow 是过去十几拍的位置平均值，error 是当前值。
+     * 两者之差就是"线正在往哪边移动"：
+     *   正 -> 位置在变大 -> 线往左移 -> 弯往左
+     *   负 -> 线往右移 -> 弯往右
+     *
+     * 只在【真的看到线】时更新，丢线时的满幅回退值不能进滤波器，
+     * 否则会把趋势值带偏。
+     */
+    if (Gray_IsLineLost(gray) == 0U)
+    {
+        pd->pos_trend = error - pd->pos_slow;
+        pd->pos_slow += LINE_TREND_ALPHA * (error - pd->pos_slow);
+    }
 
     /* ---------- 3. 丢线计数 ---------- */
     if (Gray_IsLineLost(gray) != 0U)
@@ -302,7 +321,34 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
         }
 
 #if (LINE_SEARCH_ENABLE != 0)
+        /*
+         * ---- 刚进入搜索：锁定方向 ----
+         *
+         * 只在 search_ms 还是 0 的那一拍锁存，之后不再改变。
+         * 这样即使斑块扫过、偶尔又看到一点线，也不会把方向翻掉。
+         */
+        if (pd->search_ms == 0U)
+        {
+            float trend = pd->pos_trend;
+            float abs_trend = (trend < 0.0f) ? -trend : trend;
+
+            if (abs_trend > LINE_TREND_THRESHOLD_CM)
+            {
+                /* 趋势明显：跟着线移动的方向转 */
+                pd->search_dir = (trend > 0.0f) ? 1 : -1;
+            }
+            else
+            {
+                /* 趋势不明显（直线丢线）：退回用最后一刻的位置 */
+                pd->search_dir = (pd->error >= 0.0f) ? 1 : -1;
+            }
+        }
+
+#if (LINE_SEARCH_BIDIRECTIONAL != 0)
+        if (pd->search_ms <= (uint16_t)(LINE_SEARCH_TIMEOUT_MS * 2U))
+#else
         if (pd->search_ms <= LINE_SEARCH_TIMEOUT_MS)
+#endif
         {
             /*
              * ---- 搜索模式：原地慢转找线 ----
@@ -318,7 +364,23 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
             float v_outer = LINE_SEARCH_SPEED_CMS;
             float v_inner = -LINE_SEARCH_SPEED_CMS * LINE_SEARCH_INNER_RATIO;
 
-            uint8_t turn_left = (pd->error >= 0.0f) ? 1U : 0U;
+            /*
+             * 决定这一拍的方向。
+             *
+             * 单向模式：一直用进入搜索时锁定的方向。
+             * 双向模式：前半程用锁存方向，后半程自动反方向。
+             *           这样即使初始方向猜错，也能在第二阶段扫到线。
+             */
+            int8_t  dir_now = pd->search_dir;
+
+#if (LINE_SEARCH_BIDIRECTIONAL != 0)
+            if (pd->search_ms > LINE_SEARCH_TIMEOUT_MS)
+            {
+                dir_now = (int8_t)(-pd->search_dir);
+            }
+#endif
+
+            uint8_t turn_left = (dir_now >= 0) ? 1U : 0U;
 
             if (turn_left != 0U)
             {
@@ -368,10 +430,23 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray, I2C_HandleTypeDef *hi2
     }
 
     /*
-     * 找到线了：清零搜索计时。
-     * 下次再丢线时重新获得完整的搜索时间预算。
+     * ---- 确认"真的找回来了" ----
+     *
+     * 要求连续 LINE_RECOVER_CYCLES 拍都看到线才清空搜索状态。
+     * 锐角弯里斑块扫过时经常只看到一拍，如果立刻退出搜索，
+     * 下一拍又丢 -> 搜索里程重置 -> 方向重新锁存 -> 反复抽搐。
      */
-    pd->search_ms = 0U;
+    if (pd->recover_count < 0xFFU)
+    {
+        pd->recover_count++;
+    }
+
+    if (pd->recover_count >= LINE_RECOVER_CYCLES)
+    {
+        pd->search_ms   = 0U;
+        pd->search_dir  = 0;
+        pd->recover_count = LINE_RECOVER_CYCLES;
+    }
 
     /* ---------- 8. 正常，输出到内环 ---------- */
     pd->line_lost = 0U;
@@ -442,13 +517,14 @@ void LinePD_VerifySigns(Line_PD_t *pd, Gray_Sensor_t *gray,
 
     for (i = 0U; i < 200U; i++)     /* 200 x 100ms = 20 秒 */
     {
+        uint8_t gray_result;
         float   pos_cm;
         float   error;
-        uint8_t gray_result;
         const char *verdict;
 
         HAL_Delay(LINE_PD_PERIOD_MS);
 
+        /* 这是独立的自检函数，自己读传感器，与 20ms 采样节拍无关 */
         gray_result = Gray_Update(gray, hi2c);
 
         if ((gray_result == 1U) || (gray_result == 2U))
@@ -582,7 +658,7 @@ void LinePD_TestSequence(Line_PD_t *pd, Gray_Sensor_t *gray,
         HAL_Delay(LINE_PD_PERIOD_MS);
         elapsed_ms += LINE_PD_PERIOD_MS;
 
-        result = LinePD_Update(pd, gray, hi2c);
+        result = LinePD_Update(pd, gray);
 
         {
             float left_target  = pd->speed + pd->steer;
