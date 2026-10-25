@@ -147,6 +147,37 @@
 #define GRAY_SIDE_OTHER_MAX         1U      /* 另一侧至多这么多路            */
 #define GRAY_ALL_MIN_CHANNELS       7U      /* 判 ALL 至少这么多路激活       */
 
+/*
+ * ---- 场景防抖（时间维度的迟滞）----
+ *
+ * 【要解决的问题】
+ *   单个 20ms 采样帧里，"直角"（单簇、半边占优）和"锐角"（双簇）
+ *   本来就不是互斥的物理类别：车走到锐角弯的顶点附近时，
+ *   黑线会先被 8 路探头切成两段（双簇 -> FORK），
+ *   再随着车头继续前压并成一片（单簇宽黑带 -> SIDE），
+ *   偶尔还会全亮（ALL）。加上模块自学习阈值在临界点抖动，
+ *   逐帧分类就会在 SIDE 和 FORK 之间来回跳 —— 这正是"判断冲突"。
+ *
+ * 【做法】
+ *   分类结果不再逐帧直接生效，而是先做"连续 N 帧一致"的确认：
+ *     - 进入角点、退出角点、角点子类型互切，用不同的确认次数
+ *     - 丢线（NONE）必须立即生效，不能防抖，否则会拖慢停车/搜索
+ *   这样输出给控制器的 scene 在时间上是连续、单调的，
+ *   不会出现一帧 SIDE、一帧 FORK 的抖动。
+ *
+ * 【调参】
+ *   采样 20ms/次，所以：
+ *     2 次 ≈ 40ms、3 次 ≈ 60ms
+ *   确认次数越大越稳，但入弯判断越晚。先按默认值跑，看串口
+ *   [L] 行的 sc（防抖后）和 sr（原始）两列，如果 sr 抖得厉害
+ *   而 sc 稳定，就说明参数合适。
+ */
+#define GRAY_CLUSTER_MERGE_GAP       1U   /* 相邻两簇间隔 ≤ 此通道数则合并成一簇 */
+#define GRAY_SCENE_CONFIRM_SAMPLES   2U   /* LINE ↔ 角点 的进入/退出确认次数     */
+#define GRAY_SCENE_RELEASE_SAMPLES   3U   /* 角点 → LINE 的释放确认次数           */
+#define GRAY_SCENE_SUBTYPE_SAMPLES   3U   /* 角点子类型互切（SIDE↔FORK↔ALL）确认  */
+#define GRAY_SCENE_LOST_SAMPLES      1U   /* 任意 → NONE（丢线）确认次数          */
+
 enum
 {
     GRAY_SCENE_NONE   = 0,      /* 丢线                                          */
@@ -236,7 +267,35 @@ typedef struct
      * 每一帧把 8 路状态归类成一个场景，供外环做离散决策。
      * 这些判据全部来自可观测的通道状态，不含任何推断。
      */
-    uint8_t  scene;
+    uint8_t  scene;             /* 防抖之后的场景，控制器用这个              */
+
+    /*
+     * ---- 场景防抖状态（见 Gray.h 顶部 GRAY_SCENE_*_SAMPLES 的说明）----
+     *
+     * 防抖分两级，因为"直角 / 锐角"不是互斥类别，不能要求
+     * 同一个子类型连续出现 N 次（真实锐角弯里 SIDE 和 FORK 会交替）：
+     *
+     *   第一级：场景族 —— NONE / LINE / 角点(ALL|SIDE|FORK)
+     *           族切换需要连续确认；角点族的进入只看"是不是角点"，
+     *           SIDE 和 FORK 交替也能在 2 帧内确认进入。
+     *   第二级：角点内部的子类型 —— 只有连续 N 帧都是同一个子类型
+     *           才更新（所以交替抖动时 sc 保持不变，不会来回跳）。
+     *
+     *   scene_raw      : 本帧未经防抖的瞬时分类，只用于调试对比
+     *   scene_fam_cand : 正在确认的候选场景族
+     *   scene_hold     : 候选场景族已经连续出现的帧数
+     *   scene_sub_cand : 角点内部正在确认的候选子类型
+     *   scene_sub_hold : 候选子类型已经连续出现的帧数
+     *   scene_init     : 首次上电时直接采纳第一帧，不要求连续确认
+     *   scene_flips    : 防抖后场景族的累计切换次数（诊断用）
+     */
+    uint8_t  scene_raw;
+    uint8_t  scene_fam_cand;
+    uint8_t  scene_hold;
+    uint8_t  scene_sub_cand;
+    uint8_t  scene_sub_hold;
+    uint8_t  scene_init;
+    uint16_t scene_flips;
 
     /*
      * 分叉时"另一条腿"的方向（+1 左 / -1 右 / 0 无分叉）。

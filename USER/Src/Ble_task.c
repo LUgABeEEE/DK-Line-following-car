@@ -449,11 +449,16 @@ static void BleTask_DumpPid(void)
         /*
          * 行尾字段：
          *   sd±1 : 搜索方向锁存值
-         *   sc=?? : 本拍场景（0=NONE 1=LINE 2=ALL 3=SIDE_L 4=SIDE_R 5=FORK）
-         *   cd±1  : 分叉时观测到的弯道方向
+         *   sc=?? : 防抖之后的稳定场景
+         *           0=NONE 1=LINE 2=ALL 3=SIDE_L 4=SIDE_R 5=FORK
+         *   cd±1  : 角点事件锁存的方向（+1 左 / -1 右 / 0 未锁存）
+         *   sr=?? : 本帧【未经防抖】的瞬时场景（编号同 sc）
+         *   cs=0/1: 是否处于角点事件中
          *
-         * 有了这两个字段，就能直接核对"减速/停车/转向"这些离散动作
-         * 是不是由正确的判据触发的，而不是黑盒。
+         * sr 和 sc 放在同一行，是用来验证防抖效果的：
+         *   锐角弯里 sr 会快速在 3/4/5 之间跳，而 sc 应该稳定，
+         *   cs 应该在进弯时变 1、出弯 3 拍后回 0。
+         *   如果 sc 也跟着 sr 跳，说明 GRAY_SCENE_*_SAMPLES 还要调大。
          */
         {
             static const char *scene_name[] = {
@@ -463,7 +468,7 @@ static void BleTask_DumpPid(void)
                                 ? scene_name[g_line_pd.scene_last] : "?";
 
             (void)snprintf(line, sizeof(line),
-                           "[L%s] %s e%s s%s L%s R%s sd%+d sc=%s cd%+d\r\n",
+                           "[L%s] %s e%s s%s L%s R%s sd%+d sc=%s cd%+d sr=%d cs=%d\r\n",
                            BLE_BUILD_TAG,
                            mode_tag,
                            BleTask_Fmt1(b1, sizeof(b1), g_line_pd.error),
@@ -472,7 +477,9 @@ static void BleTask_DumpPid(void)
                            BleTask_Fmt1(b4, sizeof(b4), g_line_pd.right_target),
                            (int)g_line_pd.search_dir,
                            sname,
-                           (int)g_line_pd.corner_dir);
+                           (int)g_line_pd.corner_dir,
+                           (int)g_gray.scene_raw,
+                           (int)g_line_pd.corner_active);
         }
     }
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,

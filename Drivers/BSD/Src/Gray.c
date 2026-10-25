@@ -132,6 +132,61 @@ uint8_t Gray_RefreshThreshold(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
 }
 
 /* ------------------------------------------------------------------------- */
+/* 场景防抖                                                                    */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * 场景族：把 6 个细分场景归成 3 类。
+ *
+ *   0 = 丢线 NONE
+ *   1 = 正常单线 LINE
+ *   2 = 角点 ALL / SIDE_L / SIDE_R / FORK
+ *
+ * 为什么防抖要以"族"为单位：
+ *   直角（SIDE）和锐角（FORK）不是互斥类别，同一个锐角弯里
+ *   SIDE / FORK 会逐帧交替出现。如果要求"同一个子类型连续 N 帧"，
+ *   交替抖动时永远凑不够 N 帧，角点事件反而永远进不去 ——
+ *   车会直直地冲过弯心。以族为单位确认，交替也能在 2 帧内进入角点。
+ */
+static uint8_t Gray_SceneFamily(uint8_t scene)
+{
+    if (scene == GRAY_SCENE_NONE)
+    {
+        return 0U;
+    }
+    if (scene == GRAY_SCENE_LINE)
+    {
+        return 1U;
+    }
+    return 2U;      /* ALL / SIDE_L / SIDE_R / FORK 都算角点 */
+}
+
+/*
+ * 场景族切换需要连续确认多少帧。
+ *
+ *   - 任意 -> 丢线      : 立即生效（安全事件，晚 40ms 就可能冲出去）
+ *   - 丢线 -> 任意      : 正常确认
+ *   - 角点 -> 正常单线  : 多确认一次，防止弯心残留的宽黑带被判成"出弯"
+ *   - 其它（单线 <-> 角点）: 正常确认
+ */
+static uint8_t Gray_SceneFamilyConfirmNeed(uint8_t prev_fam, uint8_t next_fam)
+{
+    if (next_fam == 0U)
+    {
+        return GRAY_SCENE_LOST_SAMPLES;
+    }
+    if (prev_fam == 0U)
+    {
+        return GRAY_SCENE_CONFIRM_SAMPLES;
+    }
+    if ((prev_fam == 2U) && (next_fam == 1U))
+    {
+        return GRAY_SCENE_RELEASE_SAMPLES;
+    }
+    return GRAY_SCENE_CONFIRM_SAMPLES;
+}
+
+/* ------------------------------------------------------------------------- */
 /* 核心：读一次并解算                                                          */
 /* ------------------------------------------------------------------------- */
 
@@ -224,6 +279,11 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
         uint8_t cl_first[GRAY_CHANNEL_COUNT];
         uint8_t cl_last[GRAY_CHANNEL_COUNT];
         uint8_t cl_count = 0U;
+        uint8_t raw_scene = GRAY_SCENE_NONE;
+        /* 分叉时选中的那条"腿"，用于禁用另一条腿的权重 */
+        uint8_t gate_first = 0U;
+        uint8_t gate_last  = 0U;
+        uint8_t gate_valid = 0U;
 
         i = 0U;
         while (i < GRAY_CHANNEL_COUNT)
@@ -247,6 +307,40 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
             {
                 i++;
             }
+        }
+
+        /*
+         * ---- 簇合并（间隔 ≤ GRAY_CLUSTER_MERGE_GAP）----
+         *
+         * 为什么必须合并：
+         *   模块的状态位是逐路自学习阈值判出来的，一条连续的黑线在
+         *   临界点上可能出现"亮-灭-亮"的单个空洞。如果不合并，
+         *   这条线会被算成两个簇 —— 直接判成 FORK（锐角），
+         *   而实际上只是阈值抖动。锐角判断"乱跳"的很大一部分来源就在这里。
+         *
+         *   真正的锐角弯，两条腿之间隔着大片白底（间隔远大于 1 路），
+         *   不会被这条规则合并掉。
+         */
+        if (cl_count > 1U)
+        {
+            uint8_t m = 0U;
+            uint8_t c;
+
+            for (c = 0U; c < cl_count; c++)
+            {
+                if ((m > 0U) &&
+                    ((int)(cl_first[c] - cl_last[m - 1U] - 1) <= (int)GRAY_CLUSTER_MERGE_GAP))
+                {
+                    cl_last[m - 1U] = cl_last[c];
+                }
+                else
+                {
+                    cl_first[m] = cl_first[c];
+                    cl_last[m]  = cl_last[c];
+                    m++;
+                }
+            }
+            cl_count = m;
         }
 
         sensor->corner_dir    = 0;
@@ -273,7 +367,7 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
 
         if (cl_count == 0U)
         {
-            sensor->scene = GRAY_SCENE_NONE;
+            raw_scene = GRAY_SCENE_NONE;
         }
         else if (cl_count >= 2U)
         {
@@ -362,23 +456,18 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
                 }
             }
 
-            sensor->scene = GRAY_SCENE_FORK;
+            raw_scene = GRAY_SCENE_FORK;
 
             /*
-             * 分叉时只跟踪选中的那条腿，避免质心落在两条腿中间。
-             * 用 gate 机制：其余通道的权重置 0。
+             * 记录选中的那条腿。真正的门控（把其余通道权重置 0）
+             * 要等防抖结果出来以后再做 —— 只有防抖后的场景仍然是 FORK，
+             * 才说明这两条腿稳定存在，这时才值得只跟一条腿。
+             * 否则每帧都按瞬时分类门控一次，质心会在"两条腿中间"
+             * 和"单条腿"之间来回跳，转向自然也跟着抖。
              */
-            {
-                uint8_t c2;
-
-                for (c2 = 0U; c2 < GRAY_CHANNEL_COUNT; c2++)
-                {
-                    if ((c2 < cl_first[chosen]) || (c2 > cl_last[chosen]))
-                    {
-                        sensor->channel[c2] = 0U;
-                    }
-                }
-            }
+            gate_first = cl_first[chosen];
+            gate_last  = cl_last[chosen];
+            gate_valid = 1U;
         }
         else
         {
@@ -416,23 +505,145 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
             if (sensor->active_count >= GRAY_ALL_MIN_CHANNELS)
             {
                 /* 几乎全亮：横向黑线 / 终点标记 / 传感器悬空 */
-                sensor->scene = GRAY_SCENE_ALL;
+                raw_scene = GRAY_SCENE_ALL;
             }
             else if ((left_on >= GRAY_SIDE_DOMINANT_MIN) &&
                      (right_on <= GRAY_SIDE_OTHER_MAX))
             {
                 /* 左半边占优：直角弯向左 */
-                sensor->scene = GRAY_SCENE_SIDE_L;
+                raw_scene = GRAY_SCENE_SIDE_L;
             }
             else if ((right_on >= GRAY_SIDE_DOMINANT_MIN) &&
                      (left_on <= GRAY_SIDE_OTHER_MAX))
             {
                 /* 右半边占优：直角弯向右 */
-                sensor->scene = GRAY_SCENE_SIDE_R;
+                raw_scene = GRAY_SCENE_SIDE_R;
             }
             else
             {
-                sensor->scene = GRAY_SCENE_LINE;
+                raw_scene = GRAY_SCENE_LINE;
+            }
+        }
+
+        /* ---- 5a-2. 场景防抖（见 Gray.h 的 GRAY_SCENE_*_SAMPLES 说明） ---- */
+        sensor->scene_raw = raw_scene;
+
+        {
+            uint8_t raw_fam = Gray_SceneFamily(raw_scene);
+            uint8_t st_fam  = Gray_SceneFamily(sensor->scene);
+
+            if (sensor->scene_init == 0U)
+            {
+                /* 首次上电：直接采纳，不要求连续确认 */
+                sensor->scene          = raw_scene;
+                sensor->scene_fam_cand = raw_fam;
+                sensor->scene_hold     = 0U;
+                sensor->scene_sub_cand = raw_scene;
+                sensor->scene_sub_hold = 0U;
+                sensor->scene_init     = 1U;
+            }
+            else if (raw_fam == st_fam)
+            {
+                /* 场景族没变：清掉族切换计数 */
+                sensor->scene_hold = 0U;
+
+                if (raw_scene == sensor->scene)
+                {
+                    sensor->scene_sub_cand = raw_scene;
+                    sensor->scene_sub_hold = 0U;
+                }
+                else if (st_fam == 2U)
+                {
+                    /*
+                     * 角点内部换子类型（SIDE <-> FORK <-> ALL）：
+                     * 必须连续 GRAY_SCENE_SUBTYPE_SAMPLES 帧都是同一个新子类型
+                     * 才改。这样"一帧 SIDE、一帧 FORK"的抖动不会输出出去，
+                     * 串口 sc 字段在锐角弯里也保持稳定。
+                     */
+                    if (raw_scene == sensor->scene_sub_cand)
+                    {
+                        if (sensor->scene_sub_hold < 0xFFU)
+                        {
+                            sensor->scene_sub_hold++;
+                        }
+                    }
+                    else
+                    {
+                        sensor->scene_sub_cand = raw_scene;
+                        sensor->scene_sub_hold = 1U;
+                    }
+
+                    if (sensor->scene_sub_hold >= GRAY_SCENE_SUBTYPE_SAMPLES)
+                    {
+                        sensor->scene_sub_hold = 0U;
+                        sensor->scene          = raw_scene;
+                        if (sensor->scene_flips < 0xFFFFU)
+                        {
+                            sensor->scene_flips++;
+                        }
+                    }
+                }
+                else
+                {
+                    /* 丢线族和单线族各只有一个成员，理论到不了这里 */
+                    sensor->scene = raw_scene;
+                }
+            }
+            else
+            {
+                uint8_t need;
+
+                /* 累计候选场景族的连续帧数 */
+                if (raw_fam == sensor->scene_fam_cand)
+                {
+                    if (sensor->scene_hold < 0xFFU)
+                    {
+                        sensor->scene_hold++;
+                    }
+                }
+                else
+                {
+                    sensor->scene_fam_cand = raw_fam;
+                    sensor->scene_hold     = 1U;
+                }
+
+                need = Gray_SceneFamilyConfirmNeed(st_fam, raw_fam);
+                if (sensor->scene_hold >= need)
+                {
+                    /*
+                     * 采用这一帧的瞬时分类作为新场景。
+                     * 进入角点时，这一帧是 SIDE 还是 FORK 都无所谓 ——
+                     * 外环只把它当"角点事件"，方向由各自的分支给出。
+                     */
+                    sensor->scene          = raw_scene;
+                    sensor->scene_hold     = 0U;
+                    sensor->scene_sub_cand = raw_scene;
+                    sensor->scene_sub_hold = 0U;
+                    if (sensor->scene_flips < 0xFFFFU)
+                    {
+                        sensor->scene_flips++;
+                    }
+                }
+            }
+        }
+
+        /*
+         * ---- 5a-3. 分叉门控（只在防抖后仍为 FORK 时生效）----
+         *
+         * 只跟选中的那条腿，避免质心落在两条腿中间。
+         * 放到防抖之后做：瞬时分类偶尔出现双簇时不再直接改质心，
+         * 否则位置解算会跟着场景一起跳。
+         */
+        if ((sensor->scene == GRAY_SCENE_FORK) && (gate_valid != 0U))
+        {
+            uint8_t c2;
+
+            for (c2 = 0U; c2 < GRAY_CHANNEL_COUNT; c2++)
+            {
+                if ((c2 < gate_first) || (c2 > gate_last))
+                {
+                    sensor->channel[c2] = 0U;
+                }
             }
         }
     }

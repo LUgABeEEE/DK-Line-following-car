@@ -145,6 +145,17 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->search_ms      = 0U;
     pd->left_target    = 0.0f;
     pd->right_target   = 0.0f;
+
+    /* 搜索与角点事件状态一并清掉：重置后必须从"不在任何事件里"开始 */
+    pd->search_dir     = 0;
+    pd->recover_count  = 0U;
+    pd->corner_active  = 0U;
+    pd->corner_confirm = 0U;
+    pd->corner_release = 0U;
+    pd->corner_dir     = 0;
+    pd->all_assist     = 0U;
+    pd->all_count      = 0U;
+    pd->scene_last     = 0U;
 }
 
 void LinePD_SetGains(Line_PD_t *pd, float kp, float kd, float base_speed)
@@ -183,6 +194,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
     float   steer;
     float   slow_factor;
     float   error_limit;
+    uint8_t assist;
 
     if ((pd == NULL) || (gray == NULL))
     {
@@ -210,14 +222,43 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         return LINE_PD_ERR_I2C;
     }
 
-    /* ---------- 2. 取误差并按线性区限幅 ---------- */
+    /* ---------- 2. 角点事件状态更新（SIDE / FORK 统一处理） ---------- */
+    /*
+     * 判据全部来自 gray->scene。它已经在 Gray_Update 里做过时间防抖，
+     * 所以这里看到的是"稳定场景"，不会一帧 SIDE、一帧 FORK。
+     *
+     * 事件生命周期：
+     *   进入：SIDE_L / SIDE_R / FORK 连续 LINE_CORNER_CONFIRM_CYCLES 拍
+     *   保持：方向锁存，不再重判（这是"不来回跳"的关键）
+     *   退出：连续 LINE_CORNER_RELEASE_CYCLES 拍都是 LINE
+     *
+     * 丢线（NONE）不释放事件：角点里丢线恰恰要保留锁存方向去搜索。
+     */
+    pd->scene_last = (uint8_t)gray->scene;
+
+    if (gray->scene == GRAY_SCENE_ALL)
+    {
+        if (pd->all_count < 0xFFU)
+        {
+            pd->all_count++;
+        }
+    }
+    else
+    {
+        pd->all_count = 0U;
+    }
+
 #if (LINE_STOP_ON_ALL_BLACK != 0)
-    if (pd->all_count >= LINE_ALL_CONFIRM_CYCLES)
+    if ((pd->corner_active == 0U) &&
+        (pd->all_count >= LINE_ALL_CONFIRM_CYCLES))
     {
         /*
          * 几乎全部通道都激活 —— 横向黑线 / 终点标记 / 传感器离开赛道。
          * 停车是唯一安全的处理方式：此时位置解算没有意义
          * （整片都是"线"），继续按质心开车必然乱跑。
+         *
+         * 角点事件内不触发：锐角弯的弯心同样会全亮，
+         * 那时需要的是"继续转"，不是"停"。
          */
         const char *msg = "[LinePD] all-black, stop\r\n";
 
@@ -235,67 +276,101 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
     }
 #endif
 
+    {
+        uint8_t is_corner = 0U;
+        int8_t  evidence  = 0;
+
+        if (gray->scene == GRAY_SCENE_SIDE_L)
+        {
+            is_corner = 1U;
+            evidence  = 1;       /* 左半边全黑 -> 向左转 */
+        }
+        else if (gray->scene == GRAY_SCENE_SIDE_R)
+        {
+            is_corner = 1U;
+            evidence  = -1;      /* 右半边全黑 -> 向右转 */
+        }
+        else if (gray->scene == GRAY_SCENE_FORK)
+        {
+            is_corner = 1U;
+            evidence  = (int8_t)gray->corner_dir;   /* 另一条腿所在的一侧 */
+        }
+        else
+        {
+            is_corner = 0U;
+        }
+
+        if (is_corner != 0U)
+        {
+            if (pd->corner_confirm < 0xFFU)
+            {
+                pd->corner_confirm++;
+            }
+
+            /*
+             * 方向锁存：只在事件还没有方向时采纳证据。
+             * 一旦锁存，后续帧即使给出相反证据也不改 ——
+             * 以前的写法每帧都能覆盖方向，正好被"直角/锐角来回跳"
+             * 牵着走，搜索方向也跟着乱翻。
+             */
+            if ((pd->corner_dir == 0) && (evidence != 0))
+            {
+                pd->corner_dir = evidence;
+            }
+
+            if (pd->corner_confirm >= LINE_CORNER_CONFIRM_CYCLES)
+            {
+                pd->corner_active  = 1U;
+                pd->corner_release = 0U;
+            }
+        }
+        else
+        {
+            pd->corner_confirm = 0U;
+        }
+
+        if (pd->corner_active != 0U)
+        {
+            if (gray->scene == GRAY_SCENE_LINE)
+            {
+                if (pd->corner_release < 0xFFU)
+                {
+                    pd->corner_release++;
+                }
+                if (pd->corner_release >= LINE_CORNER_RELEASE_CYCLES)
+                {
+                    pd->corner_active  = 0U;
+                    pd->corner_release = 0U;
+                    pd->corner_dir     = 0;
+                }
+            }
+            else
+            {
+                pd->corner_release = 0U;
+            }
+        }
+    }
+
+    /* ---------- 2b. 取误差；角点内遇到 ALL 时用锁存方向兜底 ---------- */
     error_limit = LinePD_ErrorLimit();
     error = LinePD_Clamp(Gray_GetPositionCm(gray), error_limit);
+
+    assist = 0U;
+#if (LINE_ALL_AS_CORNER != 0)
+    if ((pd->corner_active != 0U) &&
+        (gray->scene == GRAY_SCENE_ALL) &&
+        (pd->corner_dir != 0))
+    {
+        /*
+         * 8 路全黑时加权质心必然落在阵列正中，error ≈ 0，
+         * PD 会输出 0 差速 —— 车直直地冲出弯心。
+         * 此时位置信息已经没有意义，改用事件开始时锁存的方向满舵。
+         */
+        error  = (pd->corner_dir > 0) ? error_limit : -error_limit;
+        assist = 1U;
+    }
+#endif
     pd->error = error;
-
-    /*
-     * ---- 场景处理 ----
-     *
-     * 全部判据来自 gray->scene（可观测的通道状态），不含推断。
-     *
-     *   ALL   : 横向黑线 / 终点 / 悬空 -> 停车
-     *   SIDE  : 直角弯 -> 额外减速 + 放宽差速
-     *   FORK  : 锐角弯 -> 记录弯道方向，丢线时朝它搜索
-     */
-    pd->scene_last = (uint8_t)gray->scene;
-
-    /* --- ALL：确认后停车 --- */
-    if (gray->scene == GRAY_SCENE_ALL)
-    {
-        if (pd->all_count < 0xFFU)
-        {
-            pd->all_count++;
-        }
-    }
-    else
-    {
-        pd->all_count = 0U;
-    }
-
-    /* --- SIDE：直角弯 --- */
-    if ((gray->scene == GRAY_SCENE_SIDE_L) ||
-        (gray->scene == GRAY_SCENE_SIDE_R))
-    {
-        if (pd->side_count < 0xFFU)
-        {
-            pd->side_count++;
-        }
-        pd->side_dir = (gray->scene == GRAY_SCENE_SIDE_L) ? 1 : -1;
-    }
-    else
-    {
-        pd->side_count = 0U;
-    }
-
-    /* --- FORK：锐角弯，锁存方向 --- */
-    if (gray->scene == GRAY_SCENE_FORK)
-    {
-        if (gray->corner_dir != 0)
-        {
-            pd->corner_dir = gray->corner_dir;
-            pd->fork_hold  = LINE_FORK_HOLD_CYCLES;
-        }
-    }
-    else if (pd->fork_hold > 0U)
-    {
-        pd->fork_hold--;
-        if (pd->fork_hold == 0U)
-        {
-            pd->corner_dir = 0;
-        }
-    }
-
 
     /* ---------- 3. 丢线计数 ---------- */
     if (Gray_IsLineLost(gray) != 0U)
@@ -310,9 +385,16 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         pd->lost_count = 0U;
     }
 
-    /* ---------- 4. 微分项：带低通滤波，首拍不做微分 ---------- */
-    if (pd->first_run != 0U)
+    /* ---------- 4. 微分项：带低通滤波，首拍/不可导的边沿不做微分 ---------- */
+    if ((pd->first_run != 0U) || (assist != 0U) || (pd->all_assist != 0U))
     {
+        /*
+         * 三种情况本拍不做微分：
+         *   首拍            —— 没有上一拍误差
+         *   进入 assist     —— error 被强行拉到 ±error_limit，是阶跃
+         *   退出 assist     —— error 从 ±error_limit 跳回实测值，也是阶跃
+         * 不冻结的话，Kd 会在这个边沿上打出一个假的大差速，车身会抽一下。
+         */
         pd->first_run  = 0U;
         pd->last_error = error;
         derivative     = 0.0f;
@@ -323,6 +405,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         derivative = (error - pd->last_error) / dt_sec;
         pd->last_error = error;
     }
+    pd->all_assist = assist;
 
     pd->d_filter_state += pd->d_filter * (derivative - pd->d_filter_state);
     derivative = pd->d_filter_state;
@@ -331,16 +414,19 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
     steer = (pd->kp * error) + (pd->kd * derivative);
     {
         /*
-         * 直角弯时临时放宽差速限幅：
-         * 整半边全是线，说明车头已经严重偏出，需要比平时更大的差速
-         * 才能把车身拧过来。放宽是有依据的（明确的 SIDE 场景），
-         * 不是无条件的。
+         * 角点事件期间放宽差速限幅：
+         * 整半边全是线（或两条腿同时可见），说明车头已经严重偏出，
+         * 需要比平时更大的差速才能把车身拧过来。
+         *
+         * 用事件状态（corner_active）而不是"本帧是不是 SIDE"来开关，
+         * 这样巡航时偶尔一帧误分类不会把差速放大 35% 又立刻收回，
+         * 转向输出在时间上是连续的。
          */
         float steer_limit = pd->diff_limit;
 
-        if (pd->side_count >= LINE_SIDE_CONFIRM_CYCLES)
+        if (pd->corner_active != 0U)
         {
-            steer_limit *= LINE_SIDE_DIFF_BOOST;
+            steer_limit *= LINE_CORNER_DIFF_BOOST;
         }
 
         steer = LinePD_Clamp(steer, steer_limit);
@@ -424,21 +510,22 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             /*
              * 搜索方向的选择，按可靠度排序：
              *
-             *   1. 分叉方向（corner_dir）
-             *      锐角弯时【直接观测到】的弯道方向，不受过冲影响。
-             *      这是最可靠的数据来源。
+             *   1. 角点事件锁存的方向（corner_dir）
+             *      进入角点事件时由 SIDE（哪半边全黑）或 FORK（另一条腿
+             *      在哪一侧）直接观测得到，之后锁存不再改。
+             *      它不受丢线前的最后位置被过冲污染的影响。
              *
              *   2. 最后有效位置的符号
-             *      常规丢线时的依据。急弯过冲时可能被误导，
+             *      常规丢线（不在角点事件里）的依据。急弯过冲时可能被误导，
              *      但它是实测值，不是推断。
              *
              * 两者都失效时由双向扫描兜底。
              */
             int8_t dir = 0;
 
-            if ((pd->fork_hold > 0U) && (pd->corner_dir != 0))
+            if ((pd->corner_active != 0U) && (pd->corner_dir != 0))
             {
-                /* 来源1：分叉观测到的弯道方向，最可靠 */
+                /* 来源1：角点事件内锁存的弯道方向，最可靠 */
                 dir = pd->corner_dir;
             }
             else

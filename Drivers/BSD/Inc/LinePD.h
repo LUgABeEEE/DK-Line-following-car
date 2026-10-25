@@ -385,27 +385,47 @@
 #define LINE_ALL_CONFIRM_CYCLES     2U
 
 /*
- * ---- SIDE：某半边的 4 路全黑 ----
+ * ---- 角点事件：SIDE（直角）与 FORK（锐角）合并处理 ----
  *
- * 直角弯。此时误差已经很大，正常 PD 也会给大差速，
- * 但这一帧的信息更明确（整半边都是线），所以额外做两件事：
- *   ① 更狠地减速（乘下面这个系数）
- *   ② 允许更大的差速（临时放宽到 diff_limit × 这个倍数）
+ * 【为什么不再按直角 / 锐角分开处理】
+ *   8 路灰度只能看到"某一帧的通道分布"。车走到锐角弯顶点附近时，
+ *   同一条黑线会先被探头切成两段（双簇 -> FORK），再随车头前压
+ *   并成一片宽黑带（单簇半边占优 -> SIDE），偶尔还会全亮（ALL）。
+ *   这三种"场景"是同一个物理事件在不同瞬间的投影，逐帧分类必然
+ *   在你一帧我一帧之间来回跳 —— 这就是"直角判断和锐角判断冲突"。
+ *
+ *   控制器真正需要的只有两件事：
+ *       ① 往哪边转（方向，可以锁存）
+ *       ② 转多狠（差速限幅 + 减速系数）
+ *   所以把 SIDE / FORK 统一成"角点事件"，事件一旦成立就锁存方向、
+ *   直到确认出弯才释放。中途无论分类怎么变，转向决策都不再重算。
+ *
+ * 【调参】
+ *   LINE_CORNER_DIFF_BOOST：角点期间允许的差速倍数。越大转得越狠，
+ *     但太大会在弯心甩尾。1.35 是当前实车能过的值。
+ *   LINE_CORNER_RELEASE_CYCLES：出弯确认拍数，40ms/拍。
  */
-#define LINE_SIDE_SLOW_FACTOR       0.45f
-#define LINE_SIDE_DIFF_BOOST        1.35f
+#define LINE_CORNER_DIFF_BOOST      1.35f
 
-/* 判定 SIDE 需要连续多少拍 */
-#define LINE_SIDE_CONFIRM_CYCLES    2U
+/* 进入角点事件需要连续多少拍（Gray 已做帧级防抖，这里只需再确认 1 拍） */
+#define LINE_CORNER_CONFIRM_CYCLES  1U
+
+/* 连续多少拍回到 LINE 才认为出弯（3 拍 = 120ms，防弯心残留宽黑带误释放） */
+#define LINE_CORNER_RELEASE_CYCLES  3U
 
 /*
- * ---- FORK：分叉 ----
+ * 角点期间遇到 ALL（整片全黑）时，改用锁存方向满舵。
  *
- * 锐角弯。记录 en corner_dir（见过的最新的分叉方向），
- * 丢线时优先用它决定搜索方向 —— 这是直接观测到的，
- * 比"最后一刻位置的符号"可靠。
+ * 【原因】
+ *   8 路全黑时加权质心必然落在阵列正中，error ≈ 0，
+ *   PD 会输出 0 差速 —— 车会"直直地"冲出弯心。
+ *   此时位置信息已经没有意义，唯一可靠的是事件开始时锁存的方向。
+ *
+ * 【安全性】
+ *   只在角点事件内生效。直线上的横向黑线（终点标记）不满足
+ *   corner_active 条件，行为不变。
  */
-#define LINE_FORK_HOLD_CYCLES       15U
+#define LINE_ALL_AS_CORNER          1
 
 /*
  * 双向扫描。
@@ -615,19 +635,22 @@ typedef struct
     uint8_t  recover_count;
 
     /*
-     * ---- 场景响应状态 ----
-     * all_count  : ALL 场景连续出现拍数（用于确认终点）
-     * side_count : SIDE 场景连续出现拍数
-     * side_dir   : SIDE 的方向（+1 左 / -1 右）
-     * fork_dir   : FORK 观测到的弯道方向（+1 左 / -1 右 / 0 无）
-     * fork_hold  : fork_dir 还要保留多少拍
-     * scene_last : 上一拍得到的场景，便于边沿判断
+     * ---- 角点事件状态（SIDE 与 FORK 统一处理）----
+     *
+     * corner_active  : 1 = 正在角点事件中
+     * corner_confirm : 进入事件前的连续确认拍数
+     * corner_release : 连续回到 LINE 的拍数
+     * corner_dir     : 事件内锁存的转弯方向（+1 左 / -1 右 / 0 未定）
+     * all_assist     : 上一拍是否处于"全黑满舵"assist 状态（用于抑制微分冲击）
+     * all_count      : ALL 场景连续出现拍数（诊断 / 终点确认用）
+     * scene_last     : 上一拍的稳定场景，供遥测显示
      */
-    uint8_t  all_count;
-    uint8_t  side_count;
-    int8_t   side_dir;
+    uint8_t  corner_active;
+    uint8_t  corner_confirm;
+    uint8_t  corner_release;
     int8_t   corner_dir;
-    uint8_t  fork_hold;
+    uint8_t  all_assist;
+    uint8_t  all_count;
     uint8_t  scene_last;
 
     uint8_t first_run;      /* 首拍标志，避免微分冲击                         */
