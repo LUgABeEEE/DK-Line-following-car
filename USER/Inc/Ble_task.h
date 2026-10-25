@@ -50,7 +50,13 @@
  * ⚠️ 本工程 configCHECK_FOR_STACK_OVERFLOW = 0，栈溢出是静默的，
  *    所以宁可留余量，不要压到刚好够用。
  */
-#define BLE_TASK_STACK_WORDS        320U
+/*
+ * 384 字 = 1536 B。
+ * 原来 320 字（1280 B），实测 [M] 行给出的历史最小剩余只有 344 B ——
+ * 这个任务要做 vsnprintf + 多条最长 72 字节的 [L] 行，余量偏薄；
+ * 堆还有 5 KB 空闲，直接加一档，避免偶发栈越界。
+ */
+#define BLE_TASK_STACK_WORDS        384U
 
 /* 任务主循环周期，单位 ms
  *

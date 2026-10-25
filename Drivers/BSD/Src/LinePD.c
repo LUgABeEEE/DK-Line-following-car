@@ -160,6 +160,7 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->commit_active  = 0U;
     pd->commit_done    = 0U;
     pd->commit_dir     = 0;
+    pd->last_commit_turn = 0.0f;
     pd->yaw_deg        = 0.0f;
     pd->corner_yaw0    = 0.0f;
     pd->last_yaw_tick  = 0U;
@@ -362,6 +363,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                 pd->corner_yaw0    = pd->yaw_deg;
                 pd->commit_active  = 0U;
                 pd->commit_done    = 0U;
+                pd->last_commit_turn = 0.0f;
             }
 
             /*
@@ -509,6 +511,8 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             pd->commit_done   = 1U;
             pd->commit_dir    = 0;
             pd->search_ms     = 0U;
+            /* 记录本次实际转过的角度，供 `[PD] ok` 输出、方便标定 */
+            pd->last_commit_turn = turned_deg;
         }
         else
         {
@@ -831,10 +835,11 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
          */
         if (pd->search_ms > 0U)
         {
-            char msg[32];
+            char msg[40];
             int  len = snprintf(msg, sizeof(msg),
-                                "[PD] ok %ums\r\n",
-                                (unsigned int)pd->search_ms);
+                                "[PD] ok %ums y%+d\r\n",
+                                (unsigned int)pd->search_ms,
+                                (int)pd->last_commit_turn);
 
             if (len > 0)
             {
