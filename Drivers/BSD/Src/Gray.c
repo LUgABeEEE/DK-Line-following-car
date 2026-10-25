@@ -214,6 +214,230 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
      *   2. 阈值一旦偏得厉害，归一化值只剩 0.05 量级，
      *      两路加起来刚到丢线门限，稍微一动就误判丢线
      */
+    /*
+     * ---- 5a. 场景分类 ----
+     *
+     * 先找出所有"连续激活"的通道簇，再据此判断场景。
+     * 全部依据可观测的通道状态，不做任何推断。
+     */
+    {
+        uint8_t cl_first[GRAY_CHANNEL_COUNT];
+        uint8_t cl_last[GRAY_CHANNEL_COUNT];
+        uint8_t cl_count = 0U;
+
+        i = 0U;
+        while (i < GRAY_CHANNEL_COUNT)
+        {
+            if (sensor->channel[i] != 0U)
+            {
+                uint8_t start = (uint8_t)i;
+
+                while ((i < GRAY_CHANNEL_COUNT) && (sensor->channel[i] != 0U))
+                {
+                    i++;
+                }
+                if (cl_count < GRAY_CHANNEL_COUNT)
+                {
+                    cl_first[cl_count] = start;
+                    cl_last[cl_count]  = (uint8_t)(i - 1U);
+                    cl_count++;
+                }
+            }
+            else
+            {
+                i++;
+            }
+        }
+
+        sensor->corner_dir    = 0;
+        sensor->scene_left    = 0U;
+        sensor->scene_right   = 0U;
+        sensor->scene_clusters = cl_count;
+        sensor->scene_span    = 0U;
+
+        /* 最大簇的跨度 */
+        {
+            uint8_t c3;
+            uint8_t max_span = 0U;
+
+            for (c3 = 0U; c3 < cl_count; c3++)
+            {
+                uint8_t span = (uint8_t)(cl_last[c3] - cl_first[c3] + 1U);
+                if (span > max_span)
+                {
+                    max_span = span;
+                }
+            }
+            sensor->scene_span = max_span;
+        }
+
+        if (cl_count == 0U)
+        {
+            sensor->scene = GRAY_SCENE_NONE;
+        }
+        else if (cl_count >= 2U)
+        {
+            /*
+             * ---- 分叉 = 锐角弯 ----
+             *
+             * 两条腿同时可见。记录"另一条腿"在哪一侧 ——
+             * 弯就往那一侧拐，丢线后搜索也用这个方向。
+             *
+             * 选簇规则：选离上一次位置最近的那条作为"当前腿"
+             * （保持连续性，不被另一条腿的质心拉偏）。
+             */
+            float last_ch = (GRAY_CHANNEL_COUNT - 1U) * 0.5f;
+            float sel_center;
+            float other_center;
+            float best_dist = 1.0e9f;
+            uint8_t chosen  = 0U;
+            uint8_t c;
+
+            /* 上一次位置换算回通道下标 */
+            if ((GRAY_CHANNEL_PITCH_MM > 0.001f) ||
+                (GRAY_CHANNEL_PITCH_MM < -0.001f))
+            {
+                last_ch += s_last_position_mm
+                           / (GRAY_CHANNEL_PITCH_MM * GRAY_DIR_SIGN);
+            }
+
+            for (c = 0U; c < cl_count; c++)
+            {
+                float center = ((float)cl_first[c] + (float)cl_last[c]) * 0.5f;
+                float dist   = center - last_ch;
+
+                if (dist < 0.0f)
+                {
+                    dist = -dist;
+                }
+                if (dist < best_dist)
+                {
+                    best_dist = dist;
+                    chosen    = c;
+                }
+            }
+
+            sel_center   = ((float)cl_first[chosen] + (float)cl_last[chosen]) * 0.5f;
+            other_center = sel_center;
+            best_dist    = 1.0e9f;
+
+            for (c = 0U; c < cl_count; c++)
+            {
+                float center;
+                float dist;
+
+                if (c == chosen)
+                {
+                    continue;
+                }
+                center = ((float)cl_first[c] + (float)cl_last[c]) * 0.5f;
+                dist   = center - sel_center;
+                if (dist < 0.0f)
+                {
+                    dist = -dist;
+                }
+                if (dist < best_dist)
+                {
+                    best_dist    = dist;
+                    other_center = center;
+                }
+            }
+
+            /*
+             * 弯的方向 = 从当前腿指向另一条腿的方向，用位置的正负约定。
+             *   delta = (other - sel) × 间距 × DIR
+             *   delta > 0 -> 另一条腿在正方向（左）
+             */
+            {
+                float delta = (other_center - sel_center)
+                              * GRAY_CHANNEL_PITCH_MM * GRAY_DIR_SIGN;
+
+                if (delta > 0.01f)
+                {
+                    sensor->corner_dir = 1;
+                }
+                else if (delta < -0.01f)
+                {
+                    sensor->corner_dir = -1;
+                }
+            }
+
+            sensor->scene = GRAY_SCENE_FORK;
+
+            /*
+             * 分叉时只跟踪选中的那条腿，避免质心落在两条腿中间。
+             * 用 gate 机制：其余通道的权重置 0。
+             */
+            {
+                uint8_t c2;
+
+                for (c2 = 0U; c2 < GRAY_CHANNEL_COUNT; c2++)
+                {
+                    if ((c2 < cl_first[chosen]) || (c2 > cl_last[chosen]))
+                    {
+                        sensor->channel[c2] = 0U;
+                    }
+                }
+            }
+        }
+        else
+        {
+            /* ---- 单簇：区分 LINE / ALL / SIDE ---- */
+            uint8_t half     = (uint8_t)(GRAY_CHANNEL_COUNT / 2U);
+            uint8_t left_on  = 0U;
+            uint8_t right_on = 0U;
+            uint8_t c;
+
+            for (c = 0U; c < GRAY_CHANNEL_COUNT; c++)
+            {
+                if (sensor->channel[c] == 0U)
+                {
+                    continue;
+                }
+
+                /*
+                 * CH1（下标0）在物理最左侧，所以下标 0~half-1 是左半边。
+                 * 这里按【下标】分左右，和位置的正负号无关
+                 * （GRAY_DIR_SIGN 影响位置符号，但不影响物理排布）。
+                 */
+                if (c < half)
+                {
+                    left_on++;
+                }
+                else
+                {
+                    right_on++;
+                }
+            }
+
+            sensor->scene_left  = left_on;
+            sensor->scene_right = right_on;
+
+            if (sensor->active_count >= GRAY_ALL_MIN_CHANNELS)
+            {
+                /* 几乎全亮：横向黑线 / 终点标记 / 传感器悬空 */
+                sensor->scene = GRAY_SCENE_ALL;
+            }
+            else if ((left_on >= GRAY_SIDE_DOMINANT_MIN) &&
+                     (right_on <= GRAY_SIDE_OTHER_MAX))
+            {
+                /* 左半边占优：直角弯向左 */
+                sensor->scene = GRAY_SCENE_SIDE_L;
+            }
+            else if ((right_on >= GRAY_SIDE_DOMINANT_MIN) &&
+                     (left_on <= GRAY_SIDE_OTHER_MAX))
+            {
+                /* 右半边占优：直角弯向右 */
+                sensor->scene = GRAY_SCENE_SIDE_R;
+            }
+            else
+            {
+                sensor->scene = GRAY_SCENE_LINE;
+            }
+        }
+    }
+
+    /* ---------- 5b. 加权质心 ---------- */
     for (i = 0U; i < GRAY_CHANNEL_COUNT; i++)
     {
         float v = 0.0f;
@@ -245,7 +469,8 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
         weight_sum += v;
     }
 
-    sensor->strength = weight_sum;
+    sensor->strength      = weight_sum;
+    sensor->last_valid_mm = s_last_position_mm;
 
     /* ---------- 6. 判定位置有效性 / 丢线 ---------- */
     if (weight_sum < GRAY_STRENGTH_MIN)

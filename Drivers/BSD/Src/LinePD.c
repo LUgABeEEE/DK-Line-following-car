@@ -211,25 +211,91 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
     }
 
     /* ---------- 2. 取误差并按线性区限幅 ---------- */
+#if (LINE_STOP_ON_ALL_BLACK != 0)
+    if (pd->all_count >= LINE_ALL_CONFIRM_CYCLES)
+    {
+        /*
+         * 几乎全部通道都激活 —— 横向黑线 / 终点标记 / 传感器离开赛道。
+         * 停车是唯一安全的处理方式：此时位置解算没有意义
+         * （整片都是"线"），继续按质心开车必然乱跑。
+         */
+        const char *msg = "[LinePD] all-black, stop\r\n";
+
+        Speed_PID_StopAll();
+        pd->left_target  = 0.0f;
+        pd->right_target = 0.0f;
+        pd->steer        = 0.0f;
+        pd->speed        = 0.0f;
+        pd->line_lost    = 1U;
+        pd->search_ms    = 0U;
+        pd->search_dir   = 0;
+
+        HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)strlen(msg), 20U);
+        return LINE_PD_ERR_LOST;
+    }
+#endif
+
     error_limit = LinePD_ErrorLimit();
     error = LinePD_Clamp(Gray_GetPositionCm(gray), error_limit);
     pd->error = error;
 
     /*
-     * ---- 位置趋势 ----
-     * pos_slow 是过去十几拍的位置平均值，error 是当前值。
-     * 两者之差就是"线正在往哪边移动"：
-     *   正 -> 位置在变大 -> 线往左移 -> 弯往左
-     *   负 -> 线往右移 -> 弯往右
+     * ---- 场景处理 ----
      *
-     * 只在【真的看到线】时更新，丢线时的满幅回退值不能进滤波器，
-     * 否则会把趋势值带偏。
+     * 全部判据来自 gray->scene（可观测的通道状态），不含推断。
+     *
+     *   ALL   : 横向黑线 / 终点 / 悬空 -> 停车
+     *   SIDE  : 直角弯 -> 额外减速 + 放宽差速
+     *   FORK  : 锐角弯 -> 记录弯道方向，丢线时朝它搜索
      */
-    if (Gray_IsLineLost(gray) == 0U)
+    pd->scene_last = (uint8_t)gray->scene;
+
+    /* --- ALL：确认后停车 --- */
+    if (gray->scene == GRAY_SCENE_ALL)
     {
-        pd->pos_trend = error - pd->pos_slow;
-        pd->pos_slow += LINE_TREND_ALPHA * (error - pd->pos_slow);
+        if (pd->all_count < 0xFFU)
+        {
+            pd->all_count++;
+        }
     }
+    else
+    {
+        pd->all_count = 0U;
+    }
+
+    /* --- SIDE：直角弯 --- */
+    if ((gray->scene == GRAY_SCENE_SIDE_L) ||
+        (gray->scene == GRAY_SCENE_SIDE_R))
+    {
+        if (pd->side_count < 0xFFU)
+        {
+            pd->side_count++;
+        }
+        pd->side_dir = (gray->scene == GRAY_SCENE_SIDE_L) ? 1 : -1;
+    }
+    else
+    {
+        pd->side_count = 0U;
+    }
+
+    /* --- FORK：锐角弯，锁存方向 --- */
+    if (gray->scene == GRAY_SCENE_FORK)
+    {
+        if (gray->corner_dir != 0)
+        {
+            pd->corner_dir = gray->corner_dir;
+            pd->fork_hold  = LINE_FORK_HOLD_CYCLES;
+        }
+    }
+    else if (pd->fork_hold > 0U)
+    {
+        pd->fork_hold--;
+        if (pd->fork_hold == 0U)
+        {
+            pd->corner_dir = 0;
+        }
+    }
+
 
     /* ---------- 3. 丢线计数 ---------- */
     if (Gray_IsLineLost(gray) != 0U)
@@ -263,7 +329,22 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 
     /* ---------- 5. PD 运算 + 差速限幅 ---------- */
     steer = (pd->kp * error) + (pd->kd * derivative);
-    steer = LinePD_Clamp(steer, pd->diff_limit);
+    {
+        /*
+         * 直角弯时临时放宽差速限幅：
+         * 整半边全是线，说明车头已经严重偏出，需要比平时更大的差速
+         * 才能把车身拧过来。放宽是有依据的（明确的 SIDE 场景），
+         * 不是无条件的。
+         */
+        float steer_limit = pd->diff_limit;
+
+        if (pd->side_count >= LINE_SIDE_CONFIRM_CYCLES)
+        {
+            steer_limit *= LINE_SIDE_DIFF_BOOST;
+        }
+
+        steer = LinePD_Clamp(steer, steer_limit);
+    }
     pd->steer = steer;
 
     /* ---------- 6. 弯道减速：偏离越大跑得越慢，给转向留时间 ---------- */
@@ -329,25 +410,59 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
          */
         if (pd->search_ms == 0U)
         {
-            float trend = pd->pos_trend;
-            float abs_trend = (trend < 0.0f) ? -trend : trend;
+            /*
+             * 搜索方向的选择，按可靠度排序：
+             *
+             *   1. 分叉方向（corner_dir）
+             *      锐角弯时【直接观测到】的弯道方向，不受过冲影响。
+             *      这是最可靠的数据来源。
+             *
+             *   2. 最后有效位置的符号
+             *      常规丢线时的依据。急弯过冲时可能被误导，
+             *      但它是实测值，不是推断。
+             *
+             * 两者都失效时由双向扫描兜底。
+             */
+            int8_t dir = 0;
 
-            if (abs_trend > LINE_TREND_THRESHOLD_CM)
+            if ((pd->fork_hold > 0U) && (pd->corner_dir != 0))
             {
-                /* 趋势明显：跟着线移动的方向转 */
-                pd->search_dir = (trend > 0.0f) ? 1 : -1;
+                /* 来源1：分叉观测到的弯道方向，最可靠 */
+                dir = pd->corner_dir;
             }
             else
             {
-                /* 趋势不明显（直线丢线）：退回用最后一刻的位置 */
-                pd->search_dir = (pd->error >= 0.0f) ? 1 : -1;
+                /* 来源2：最后一次有效位置，但要求偏离足够明显 */
+                float last_cm  = gray->last_valid_mm * 0.1f;
+                float abs_last = (last_cm < 0.0f) ? -last_cm : last_cm;
+
+                if (abs_last >= LINE_SEARCH_MIN_INFO_CM)
+                {
+                    dir = (last_cm > 0.0f) ? 1 : -1;
+                }
+                else
+                {
+                    /*
+                     * 来源3：没有任何方向信息。
+                     *
+                     * 注意这里【不是放弃搜索】—— 双向扫描是系统性的，
+                     * 会依次覆盖两个方向，起点方向不影响最终能否找到。
+                     * 所以这里只决定"先扫哪边"，带一个明确的默认值，
+                     * 而不是随机的或者隐含的。
+                     */
+                    dir = (int8_t)LINE_SEARCH_DEFAULT_DIR;
+                }
             }
+
+            pd->search_dir = dir;
         }
 
 #if (LINE_SEARCH_BIDIRECTIONAL != 0)
-        if (pd->search_ms <= (uint16_t)(LINE_SEARCH_TIMEOUT_MS * 2U))
+        if ((pd->search_dir != 0) &&
+            (pd->search_ms <= (uint16_t)(LINE_SEARCH_TIMEOUT_MS * 2U)))
 #else
-        if (pd->search_ms <= LINE_SEARCH_TIMEOUT_MS)
+        if ((pd->search_dir != 0) &&
+            (pd->search_ms <= LINE_SEARCH_TIMEOUT_MS))
 #endif
         {
             /*

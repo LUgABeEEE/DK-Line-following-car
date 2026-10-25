@@ -367,11 +367,12 @@ static const char *BleTask_Fmt1(char *buf, uint16_t size, float value);
  */
 static void BleTask_DumpPid(void)
 {
-    char line[96];
+    char line[128];
     char b1[14];
     char b2[14];
     char b3[14];
     char b4[14];
+    char b6[14];      /* lv 专用，不能和 e 共用的 b1 */
     /*
      * 里程单独一个缓冲。
      * 之前和 b3（输出）共用了，而 snprintf 的参数求值顺序不确定，
@@ -399,12 +400,47 @@ static void BleTask_DumpPid(void)
         default:                    mode_tag = "STOP"; break;
         }
 
-        (void)snprintf(line, sizeof(line), "[L] %s e%s s%s L%s R%s\r\n",
-                       mode_tag,
-                       BleTask_Fmt1(b1, sizeof(b1), g_line_pd.error),
-                       BleTask_Fmt1(b2, sizeof(b2), g_line_pd.steer),
-                       BleTask_Fmt1(b3, sizeof(b3), g_line_pd.left_target),
-                       BleTask_Fmt1(b4, sizeof(b4), g_line_pd.right_target));
+        /*
+         * 末尾的 s±1 是【搜索方向锁存值】：
+         *    0  = 当前不在搜索状态
+         *   +1  = 正在向左搜索
+         *   -1  = 正在向右搜索
+         *
+         * 加这个字段是为了让"丢线后往哪转"这个决策可见、可核对，
+         * 而不是一个黑盒。如果看到方向和自己判断的不一致，
+         * 就能立刻从这个字段确认是哪一拍锁存的。
+         */
+        /*
+         * 行尾字段：
+         *   sd±1 : 搜索方向锁存值
+         *   sc=?? : 本拍场景（0=NONE 1=LINE 2=ALL 3=SIDE_L 4=SIDE_R 5=FORK）
+         *   cd±1  : 分叉时观测到的弯道方向
+         *
+         * 有了这两个字段，就能直接核对"减速/停车/转向"这些离散动作
+         * 是不是由正确的判据触发的，而不是黑盒。
+         */
+        {
+            static const char *scene_name[] = {
+                "NONE", "LINE", "ALL ", "SIDE_L", "SIDE_R", "FORK"
+            };
+            const char *sname = (g_line_pd.scene_last < 6U)
+                                ? scene_name[g_line_pd.scene_last] : "?";
+
+            (void)snprintf(line, sizeof(line),
+                           "[L] %s e%s s%s L%s R%s sd%+d sc=%s cd%+d ln%u rt%u lv%s\r\n",
+                           mode_tag,
+                           BleTask_Fmt1(b1, sizeof(b1), g_line_pd.error),
+                           BleTask_Fmt1(b2, sizeof(b2), g_line_pd.steer),
+                           BleTask_Fmt1(b3, sizeof(b3), g_line_pd.left_target),
+                           BleTask_Fmt1(b4, sizeof(b4), g_line_pd.right_target),
+                           (int)g_line_pd.search_dir,
+                           sname,
+                           (int)g_line_pd.corner_dir,
+                           (unsigned int)g_gray.scene_left,
+                           (unsigned int)g_gray.scene_right,
+                           BleTask_Fmt1(b6, sizeof(b6),
+                                        g_gray.last_valid_mm * 0.1f));
+        }
     }
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
                             (uint16_t)strlen(line), 50U);
@@ -454,7 +490,7 @@ static void BleTask_DumpPid(void)
  */
 static void BleTask_DumpGains(void)
 {
-    char line[96];
+    char line[128];
     char b1[14];
     char b2[14];
     char b3[14];
@@ -509,7 +545,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-25c\r\n");
+    BleTask_Print("[VER] line-follower 2025-10-25d (built " __DATE__ " " __TIME__ ")\r\n");
     BleTask_Print("[BleTask] X=stop I=scan I2C\r\n");
 
     /* 同步一次连接状态，避免把"上电时已连接"误报成一次新连接 */
