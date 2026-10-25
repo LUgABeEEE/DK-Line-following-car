@@ -189,6 +189,28 @@ cmake --build --preset Debug
 先把基础速度降到 20 cm/s 调 Kp（能跟线不画龙），再加 Kd 抑制过冲；`LINE_CURVE_SLOW_MIN` 控制急弯减速深度。
 `LINE_STOP_IF_LINE_LOST=1` 是首次调试的正确选择——丢线即停，车不会冲出赛道；调顺之后再开 `LINE_SEARCH_ENABLE`，让丢线后按锁存方向双向扫描找回。
 
+### 5.5 自动采集遥测（给 AI / 脚本分析用）
+
+HC-05 是 SPP 透传，PC 端不用装 `rfcomm` 也能直接连。仓库里带了一套纯标准库的小工具：
+
+```bash
+# 1) 先在 bluetoothctl 里 pair/trust 一次（PIN 默认 1234），不需要 rfcomm bind
+
+# 2) 采集：直接连 RFCOMM，默认依次尝试通道 1~5
+python3 tools/bt_serial_capture.py --mac AA:BB:CC:DD:EE:FF --duration 60
+
+# 或者连已有的 tty（USB-TTL / 系统提供的 /dev/rfcomm0）
+python3 tools/bt_serial_capture.py --port /dev/ttyUSB0 --baud 9600
+
+# 3) 分析
+python3 tools/serial_summary.py logs/serial_YYYYmmdd_HHMMSS.loop.csv
+```
+
+输出在 `logs/`（已 gitignore）：原始 `.log` + `loop/speed/gray/scene` 四个 CSV。
+`serial_summary.py` 会直接给出 `sr`（瞬时场景）和 `sc`（防抖后场景）的变化次数对比、
+角点事件次数/时长/锁存方向，用来验证 2.1 节的防抖是否生效。
+详细用法和排错见 [`tools/README.md`](tools/README.md)。
+
 ---
 
 ## 6. N20 实测标定结果（6 V 额定 / 7.4 V 电池 / 自带编码器）
@@ -280,6 +302,7 @@ Drivers/BSD/      手写板级驱动
 USER/             FreeRTOS 任务
 cmake/            gcc-arm-none-eabi 工具链文件 + CubeMX 子工程
 docs/             原理图
+tools/            HC-05 遥测采集/解析/统计脚本（见 tools/README.md）
 linefllowing_car.ioc   CubeMX 工程（改外设从这里进）
 ```
 

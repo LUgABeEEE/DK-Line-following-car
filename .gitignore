@@ -18,3 +18,8 @@ cmake-build-*/
 # 系统
 .DS_Store
 Thumbs.db
+
+# 串口采集日志（tools/ 下脚本生成）
+logs/
+__pycache__/
+*.pyc
