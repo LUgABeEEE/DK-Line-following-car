@@ -433,7 +433,7 @@
  *   同时 last_valid = +2.2cm 也明确在左 —— 两个直接观测一致地反对锁存值。
  * 这时信实测位置，搜索方向能少绕一圈。
  */
-#define LINE_SEARCH_CONFLICT_CM     1.2f
+#define LINE_SEARCH_CONFLICT_CM     1.0f
 
 /*
  * 角点期间遇到 ALL（整片全黑）时，改用锁存方向满舵。
