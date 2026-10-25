@@ -649,9 +649,13 @@ typedef struct
     uint8_t  corner_confirm;
     uint8_t  corner_release;
     int8_t   corner_dir;
+    /* 方向证据来源：0 = 无，1 = SIDE（哪半边全黑，优先），2 = FORK（另一条腿） */
+    uint8_t  corner_dir_src;
     uint8_t  all_assist;
     uint8_t  all_count;
     uint8_t  scene_last;
+    /* 本次丢线是否已经打印过 "[PD] lost"（避免每 40ms 打一次，见 LinePD.c） */
+    uint8_t  lost_announced;
 
     uint8_t first_run;      /* 首拍标志，避免微分冲击                         */
 } Line_PD_t;

@@ -153,9 +153,11 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->corner_confirm = 0U;
     pd->corner_release = 0U;
     pd->corner_dir     = 0;
+    pd->corner_dir_src = 0U;
     pd->all_assist     = 0U;
     pd->all_count      = 0U;
     pd->scene_last     = 0U;
+    pd->lost_announced = 0U;
 }
 
 void LinePD_SetGains(Line_PD_t *pd, float kp, float kd, float base_speed)
@@ -279,21 +281,25 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
     {
         uint8_t is_corner = 0U;
         int8_t  evidence  = 0;
+        uint8_t src       = 0U;   /* 1 = SIDE（直接看到哪半边全黑） 2 = FORK（另一条腿） */
 
         if (gray->scene == GRAY_SCENE_SIDE_L)
         {
             is_corner = 1U;
             evidence  = 1;       /* 左半边全黑 -> 向左转 */
+            src       = 1U;
         }
         else if (gray->scene == GRAY_SCENE_SIDE_R)
         {
             is_corner = 1U;
             evidence  = -1;      /* 右半边全黑 -> 向右转 */
+            src       = 1U;
         }
         else if (gray->scene == GRAY_SCENE_FORK)
         {
             is_corner = 1U;
             evidence  = (int8_t)gray->corner_dir;   /* 另一条腿所在的一侧 */
+            src       = 2U;
         }
         else
         {
@@ -308,14 +314,25 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             }
 
             /*
-             * 方向锁存：只在事件还没有方向时采纳证据。
-             * 一旦锁存，后续帧即使给出相反证据也不改 ——
-             * 以前的写法每帧都能覆盖方向，正好被"直角/锐角来回跳"
-             * 牵着走，搜索方向也跟着乱翻。
+             * 方向锁存 + 优先级。
+             *
+             * 以前的写法是"第一帧证据说了算"，实测（logs/capture.log）
+             * 会出现 SIDE_L（左半边全黑，明显该左转）却锁存了 cd=-1：
+             * 因为先出现了一帧 FORK，它的"另一条腿在哪侧"先把方向占住了。
+             *
+             * 现在按证据强度分级：
+             *   SIDE（哪半边全黑）= 1，最直接，可以纠正之前由 FORK 得到的方向
+             *   FORK（另一条腿在哪侧）= 2，只在还没有任何方向时采纳
+             * 一旦由 SIDE 锁存，后续 FORK 不会再改它 —— 仍然不会来回跳。
              */
-            if ((pd->corner_dir == 0) && (evidence != 0))
+            if (evidence != 0)
             {
-                pd->corner_dir = evidence;
+                if ((pd->corner_dir_src == 0U) ||
+                    ((src == 1U) && (pd->corner_dir_src == 2U)))
+                {
+                    pd->corner_dir     = evidence;
+                    pd->corner_dir_src = src;
+                }
             }
 
             if (pd->corner_confirm >= LINE_CORNER_CONFIRM_CYCLES)
@@ -342,6 +359,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                     pd->corner_active  = 0U;
                     pd->corner_release = 0U;
                     pd->corner_dir     = 0;
+                    pd->corner_dir_src = 0U;
                 }
             }
             else
@@ -623,7 +641,25 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
          * 说明线真的不在附近了。继续转下去只会让车跑出赛道或撞墙。
          */
         {
-            const char *msg = "[LinePD] line lost, stop\r\n";
+            /*
+             * ⚠️ 9600 波特率下，从控制任务里打印"[LinePD] line lost, stop"
+             * （27 字节 ≈ 28ms）会吃掉 40ms 控制周期的一大半；
+             * 而且 20ms 的发送超时会让这行在 "s" 处被截断。
+             * 所以：
+             *   ① 只在本次丢线的第一拍打印（lost_announced 标志）
+             *   ② 消息压到 11 字节 ≈ 12ms
+             *   ③ 超时给到 40ms，保证整行发完
+             * 需要更详细的日志时，看 [L] 行或把 LINE_DEBUG_PRINT 打开。
+             */
+            if (pd->lost_announced == 0U)
+            {
+                const char *msg = "[PD] lost\r\n";
+
+                pd->lost_announced = 1U;
+                (void)HAL_UART_Transmit(&huart2, (uint8_t *)msg,
+                                        (uint16_t)strlen(msg), 40U);
+            }
+
             Speed_PID_StopAll();
 
             /*
@@ -636,8 +672,6 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             pd->right_target = 0.0f;
             pd->steer        = 0.0f;
             pd->speed        = 0.0f;
-
-            HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)strlen(msg), 20U);
         }
 
         return LINE_PD_ERR_LOST;
@@ -666,21 +700,22 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
          */
         if (pd->search_ms > 0U)
         {
-            char msg[64];
+            char msg[32];
             int  len = snprintf(msg, sizeof(msg),
-                                "[LinePD] search ok, %ums\r\n",
+                                "[PD] ok %ums\r\n",
                                 (unsigned int)pd->search_ms);
 
             if (len > 0)
             {
-                HAL_UART_Transmit(&huart2, (uint8_t *)msg,
-                                  (uint16_t)len, 20U);
+                (void)HAL_UART_Transmit(&huart2, (uint8_t *)msg,
+                                        (uint16_t)len, 40U);
             }
         }
 
         pd->search_ms   = 0U;
         pd->search_dir  = 0;
         pd->recover_count = LINE_RECOVER_CYCLES;
+        pd->lost_announced = 0U;
     }
 
     /* ---------- 8. 正常，输出到内环 ---------- */

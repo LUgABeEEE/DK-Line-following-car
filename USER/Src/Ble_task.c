@@ -38,7 +38,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "k"
+#define BLE_BUILD_TAG   "l"
 
 /*
  * UART 发送超时，单位 ms。
@@ -129,7 +129,7 @@ static uint32_t s_gray_dump_tick = 0U;
  *     L < R                    -> 车会左转
  *     线在左却 L > R           -> 差速方向反了
  */
-#define PID_DUMP_PERIOD_MS      200U
+#define PID_DUMP_PERIOD_MS      160U
 
 static uint32_t s_pid_dump_tick = 0U;
 /* 内环两行的分频计数：每两次才发一次 [A]/[B]（2.5Hz），省 9600 带宽 */
@@ -612,7 +612,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-25k (built " __DATE__ " " __TIME__ ")\r\n");
+    BleTask_Print("[VER] line-follower 2025-10-25l (built " __DATE__ " " __TIME__ ")\r\n");
     BleTask_Print("[BleTask] X=stop I=scan I2C\r\n");
 
     /* 同步一次连接状态，避免把"上电时已连接"误报成一次新连接 */
@@ -678,7 +678,7 @@ static void BleTask_Main(void *argument)
         /*
          * ---- PID 运行数据 ----
          *
-         * 外环 [L] 200ms 一次（5Hz）：60 字节 ≈ 62ms，占 9600 约 31%
+         * 外环 [L] 约 160~200ms 一次（5Hz）：60 字节 ≈ 62ms，占 9600 约 35%
          * 内环 [A]/[B] 降到 2.5Hz（隔一次发一次）：
          *   三行同时 5Hz 时合计约 124 字节 = 129ms/200ms，
          *   已经占掉 65% 带宽，会挤掉灰度行、拖慢急停响应。
@@ -712,7 +712,7 @@ static void BleTask_Main(void *argument)
                      * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
                      * 放在这里就能保证每次连接都能确认。
                      */
-                    BleTask_Print("[VER] line-follower 2025-10-25k (built "
+                    BleTask_Print("[VER] line-follower 2025-10-25l (built "
                                   __DATE__ " " __TIME__ ")\r\n");
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");
                 }

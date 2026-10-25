@@ -143,6 +143,7 @@ python3 tools/serial_summary.py logs/serial_20261025_165000.loop.csv
 |---|---|
 | `bluetoothctl connect` 报 `BREDR.ProfileUnavailable` / `No more profiles` | **正常现象**。BlueZ 没有 SPP 守护进程，它只负责建 ACL 链路；SPP 数据要靠 RFCOMM socket。`bluetoothctl info <MAC>` 里 `Connected: yes` 就说明链路已通，直接用本目录脚本 |
 | 日志里 `[L]` 在 `sr` 处截断，后面紧跟 `[A]` | 固件 `HAL_UART_Transmit` 超时 50ms，而 9600 下 60 字节的 `[L]` 行要约 62ms，每行都在第 50 字节被切断。固件已改为 `BLE_TX_TIMEOUT_MS = 250ms`（构建标记 j→k），旧固件需重刷 |
+| 日志里 `[LinePD] line lost, s` 被截断、和 `[L]` 行粘在一起 | 旧固件的控制任务打印：27 字节要 28 ms，而发送超时只有 20 ms，且每 40 ms 打一次会把控制周期吃掉大半。l 版已改成 `[PD] lost`（每次丢线只打一次）和 40 ms 超时，重刷即可 |
 | 连不上 … host is down | HC-05 没上电 / 被手机占着 / 没配对 |
 | `Permission denied` | 少数内核上 RFCOMM socket 需要特权：`sudo python3 tools/...`，或改用 USB-TTL |
 | 通道试完都失败 | HC-05 的 SPP 通道一般就是 1；若改过，用 `--channel 2` 指定 |

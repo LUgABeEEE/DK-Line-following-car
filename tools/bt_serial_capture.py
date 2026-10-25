@@ -34,6 +34,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import select
 import socket
@@ -100,19 +101,26 @@ class TtySource:
 class RfcommSource:
     """直接开 RFCOMM socket 连 HC-05，不依赖 rfcomm 命令。"""
 
-    def __init__(self, mac: str, channels) -> None:
+    # 这些 errno 表示"设备根本不可达"，换通道也没用，应交回上层重连
+    UNREACHABLE = {errno.EHOSTDOWN, errno.ETIMEDOUT,
+                   errno.EHOSTUNREACH, errno.ENETDOWN}
+
+    def __init__(self, mac: str, channels, timeout: float = 4.0) -> None:
         self.mac = mac.upper()
         last_err = None
         for ch in channels:
             s = socket.socket(socket.AF_BLUETOOTH,
                               socket.SOCK_STREAM,
                               socket.BTPROTO_RFCOMM)
-            s.settimeout(8.0)
+            s.settimeout(timeout)
             try:
                 s.connect((self.mac, ch))
             except OSError as exc:
                 last_err = exc
                 s.close()
+                if exc.errno in self.UNREACHABLE:
+                    # 模块没上电/不在范围：不要继续试 2~5 通道白等几十秒
+                    break
                 continue
             s.settimeout(None)
             self.sock = s
@@ -144,7 +152,7 @@ class RfcommSource:
 # ---------------------------------------------------------------------------
 def open_source(args):
     if args.mac:
-        return RfcommSource(args.mac, args.channel)
+        return RfcommSource(args.mac, args.channel, args.connect_timeout)
     return TtySource(args.port, args.baud)
 
 
@@ -206,6 +214,8 @@ def main() -> int:
     ap.add_argument("--mac", help="HC-05 的蓝牙 MAC，例如 AA:BB:CC:DD:EE:FF")
     ap.add_argument("--channel", type=int, nargs="+", default=[1, 2, 3, 4, 5],
                     help="RFCOMM 通道候选（默认 1~5 依次尝试）")
+    ap.add_argument("--connect-timeout", type=float, default=4.0,
+                    help="RFCOMM 单通道连接超时秒数（默认 4）")
     ap.add_argument("--port", help="tty 路径，例如 /dev/rfcomm0 或 /dev/ttyUSB0")
     ap.add_argument("--baud", type=int, default=9600,
                     help="tty 波特率（默认 9600，与 USART2 一致）")
