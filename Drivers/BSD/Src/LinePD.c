@@ -157,6 +157,12 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->corner_dir_hold = 0U;
     pd->corner_acute   = 0U;
     pd->commit_ms      = 0U;
+    pd->commit_active  = 0U;
+    pd->commit_done    = 0U;
+    pd->commit_dir     = 0;
+    pd->yaw_deg        = 0.0f;
+    pd->corner_yaw0    = 0.0f;
+    pd->last_yaw_tick  = 0U;
     pd->all_assist     = 0U;
     pd->all_count      = 0U;
     pd->scene_last     = 0U;
@@ -225,6 +231,29 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         /* I2C 通信失败：保持上一拍的电机指令不变，不拿脏数据去开车 */
         pd->line_lost = 1U;
         return LINE_PD_ERR_I2C;
+    }
+
+    /* ---------- 1b. 编码器偏航角积分（方案 C：定角转弯） ---------- */
+    /*
+     * yaw += (v_right - v_left) / 轮距 × dt
+     *   左转 -> 右轮快 -> 为正，与 corner_dir 的符号约定一致。
+     * dt 用 HAL_GetTick 的真实间隔，不用名义 40ms：
+     *   外环偶尔会被高优先级任务推迟，按名义周期积分会系统性少算角度。
+     */
+    {
+        uint32_t now_tick = HAL_GetTick();
+        uint32_t dt_ms    = now_tick - pd->last_yaw_tick;
+
+        if ((dt_ms > 0U) && (dt_ms < 200U))
+        {
+            float v_left  = Speed_PID_GetMeasure(MOTOR_A);
+            float v_right = Speed_PID_GetMeasure(MOTOR_B);
+
+            pd->yaw_deg += (v_right - v_left) / LINE_TRACK_WIDTH_CM
+                           * ((float)dt_ms / 1000.0f)
+                           * 57.2957795f;      /* rad -> deg */
+        }
+        pd->last_yaw_tick = now_tick;
     }
 
     /* ---------- 2. 角点事件状态更新（SIDE / FORK 统一处理） ---------- */
@@ -328,6 +357,11 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                 pd->corner_acute   = 0U;
                 pd->corner_active  = 1U;
                 pd->corner_release = 0U;
+
+                /* 方案 C：记下"入弯时的车头朝向"，后面按 yaw 增量做定角转弯 */
+                pd->corner_yaw0    = pd->yaw_deg;
+                pd->commit_active  = 0U;
+                pd->commit_done    = 0U;
             }
 
             /*
@@ -356,7 +390,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 
             /*
              * 锐角证据：FORK（两条腿同时可见）或 ALL（整片全黑）。
-             * 出现过的角点事件，丢线后要做"承诺转向"，见 LINE_ACUTE_MIN_TURN_MS。
+             * 出现过的角点事件，丢线后要做"承诺转向"，见 LINE_ACUTE_TURN_DEG。
              */
             if ((gray->scene == GRAY_SCENE_FORK) ||
                 (gray->scene == GRAY_SCENE_ALL))
@@ -440,21 +474,47 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         pd->lost_count = 0U;
     }
 
-    /* ---------- 3b. 锐角"承诺转向" ---------- */
+    /* ---------- 3b. 锐角"承诺转向"（角度制） ---------- */
     /*
-     * 见 LINE_ACUTE_MIN_TURN_MS 的说明：锐角丢线后先闭眼朝锁存方向转一段，
+     * 转到 LINE_ACUTE_TURN_DEG 再开始找线，而不是按固定时间。
      * 这几拍即使看到线也不认（否则会把刚走过的那条腿当成"找回来了"）。
      *
      * ⚠️ 必须放在第 3 步"丢线计数"之后：那一步在没丢线时会把 lost_count 清零，
      *    放前面会被它覆盖掉。
      */
-    if (pd->commit_ms > 0U)
+    if (pd->commit_active != 0U)
     {
-        pd->commit_ms = (uint16_t)((pd->commit_ms > LINE_PD_PERIOD_MS)
-                                   ? (pd->commit_ms - LINE_PD_PERIOD_MS)
-                                   : 0U);
-        pd->lost_count    = (uint8_t)(LINE_LOST_TOLERANCE + 1U);
-        pd->recover_count = 0U;
+        float turned_deg;
+
+        if (pd->commit_ms > LINE_PD_PERIOD_MS)
+        {
+            pd->commit_ms = (uint16_t)(pd->commit_ms - LINE_PD_PERIOD_MS);
+        }
+        else
+        {
+            pd->commit_ms = 0U;
+        }
+
+        /* 已经转过的角度（朝锁存方向为正） */
+        turned_deg = (pd->yaw_deg - pd->corner_yaw0) * (float)pd->commit_dir;
+
+        if ((turned_deg >= LINE_ACUTE_TURN_DEG) || (pd->commit_ms == 0U))
+        {
+            /*
+             * 转够了（或兜底超时）：结束承诺转向，把搜索计时清零，
+             * 让后面的双向扫描重新获得完整的搜索时间。
+             * commit_done 防止同一段搜索里再次触发承诺转向。
+             */
+            pd->commit_active = 0U;
+            pd->commit_done   = 1U;
+            pd->commit_dir    = 0;
+            pd->search_ms     = 0U;
+        }
+        else
+        {
+            pd->lost_count    = (uint8_t)(LINE_LOST_TOLERANCE + 1U);
+            pd->recover_count = 0U;
+        }
     }
 
     /* ---------- 4. 微分项：带低通滤波，首拍/不可导的边沿不做微分 ---------- */
@@ -612,12 +672,15 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                 dir = pd->corner_dir;
 
                 /*
-                 * 锐角事件：进入搜索后先"闭眼"朝这个方向再转一段时间，
+                 * 锐角事件：进入搜索后先"闭眼"朝这个方向转到目标角度，
                  * 把回来那条腿扫过去，避免刚丢线就把它当成找回来了。
+                 * commit_done 保证一次搜索里只做一次承诺转向。
                  */
-                if (pd->corner_acute != 0U)
+                if ((pd->corner_acute != 0U) && (pd->commit_done == 0U))
                 {
-                    pd->commit_ms = LINE_ACUTE_MIN_TURN_MS;
+                    pd->commit_active = 1U;
+                    pd->commit_dir    = pd->corner_dir;   /* 固定方向，防止中途被清 */
+                    pd->commit_ms     = LINE_ACUTE_COMMIT_TIMEOUT_MS;
                 }
             }
             else if (abs_last >= LINE_SEARCH_MIN_INFO_CM)
@@ -784,6 +847,8 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         pd->search_dir  = 0;
         pd->recover_count = LINE_RECOVER_CYCLES;
         pd->lost_announced = 0U;
+        pd->commit_active  = 0U;
+        pd->commit_done    = 0U;
     }
 
     /* ---------- 8. 正常，输出到内环 ---------- */

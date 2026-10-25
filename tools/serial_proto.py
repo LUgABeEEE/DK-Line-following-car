@@ -37,6 +37,7 @@ _L_RE = re.compile(
     r"cd(?P<cd>[+-]?\d+)\s+"
     r"sr=(?P<sr>\d+)\s+"
     r"cs=(?P<cs>\d+)"
+    r"(?:\s+y(?P<yaw>[+-]?\d+))?"     # p 版起：编码器偏航角（度，可为负）
 )
 
 # [A] / [B] 内环遥测
@@ -82,6 +83,7 @@ def parse_line(line: str) -> Optional[Dict[str, Any]]:
             "cd": int(d["cd"]),
             "sr": int(d["sr"]),
             "cs": int(d["cs"]),
+            "yaw": int(d["yaw"]) if d.get("yaw") is not None else None,
         }
 
     m = _AB_RE.match(line)

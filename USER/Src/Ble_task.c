@@ -38,7 +38,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "o"
+#define BLE_BUILD_TAG   "p"
 
 /*
  * UART 发送超时，单位 ms。
@@ -472,6 +472,8 @@ static void BleTask_DumpPid(uint8_t dump_speed)
          *   cd±1  : 角点事件锁存的方向（+1 左 / -1 右 / 0 未锁存）
          *   sr=?? : 本帧【未经防抖】的瞬时场景（编号同 sc）
          *   cs=0/1: 是否处于角点事件中
+         *   y±deg : 编码器估算的偏航角（左转为正），用于"定角转弯"标定
+         *           看进弯前和重新找到线时的差值，就知道这个弯要转多少度
          *
          * sr 和 sc 放在同一行，是用来验证防抖效果的：
          *   锐角弯里 sr 会快速在 3/4/5 之间跳，而 sc 应该稳定，
@@ -486,7 +488,7 @@ static void BleTask_DumpPid(uint8_t dump_speed)
                                 ? scene_name[g_line_pd.scene_last] : "?";
 
             (void)snprintf(line, sizeof(line),
-                           "[L%s] %s e%s s%s L%s R%s sd%+d sc=%s cd%+d sr=%d cs=%d\r\n",
+                           "[L%s] %s e%s s%s L%s R%s sd%+d sc=%s cd%+d sr=%d cs=%d y%+d\r\n",
                            BLE_BUILD_TAG,
                            mode_tag,
                            BleTask_Fmt1(b1, sizeof(b1), g_line_pd.error),
@@ -497,7 +499,8 @@ static void BleTask_DumpPid(uint8_t dump_speed)
                            sname,
                            (int)g_line_pd.corner_dir,
                            (int)g_gray.scene_raw,
-                           (int)g_line_pd.corner_active);
+                           (int)g_line_pd.corner_active,
+                           (int)g_line_pd.yaw_deg);
         }
     }
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
@@ -612,7 +615,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-25o (built " __DATE__ " " __TIME__ ")\r\n");
+    BleTask_Print("[VER] line-follower 2025-10-25p (built " __DATE__ " " __TIME__ ")\r\n");
     BleTask_Print("[BleTask] X=stop I=scan I2C\r\n");
 
     /* 同步一次连接状态，避免把"上电时已连接"误报成一次新连接 */
@@ -712,7 +715,7 @@ static void BleTask_Main(void *argument)
                      * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
                      * 放在这里就能保证每次连接都能确认。
                      */
-                    BleTask_Print("[VER] line-follower 2025-10-25o (built "
+                    BleTask_Print("[VER] line-follower 2025-10-25p (built "
                                   __DATE__ " " __TIME__ ")\r\n");
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");
                 }

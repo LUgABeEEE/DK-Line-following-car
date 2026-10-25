@@ -39,7 +39,7 @@ class TelemetrySink:
         self._csv["L"] = self._open_csv(
             self._name(".loop.csv"),
             ["t", "iso", "tag", "mode", "err", "steer", "left", "right",
-             "sd", "sc", "cd", "sr", "cs"],
+             "sd", "sc", "cd", "sr", "cs", "yaw"],
             "loop",
         )
         self._csv["AB"] = self._open_csv(
@@ -80,6 +80,7 @@ class TelemetrySink:
                 f"{epoch:.3f}", iso, d["tag"], d["mode"],
                 d["err"], d["steer"], d["left"], d["right"],
                 d["sd"], d["sc"], d["cd"], d["sr"], d["cs"],
+                "" if d.get("yaw") is None else d["yaw"],
             ])
         elif kind in ("A", "B"):
             self._csv["AB"]["writer"].writerow([

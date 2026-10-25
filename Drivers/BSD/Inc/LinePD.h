@@ -445,7 +445,28 @@
  *   调大：更不容易被旧腿骗到，但直角弯可能转过头；
  *   调小：接近旧行为。
  */
-#define LINE_ACUTE_MIN_TURN_MS      400U
+/*
+ * ---- 方案 C：用编码器做"定角转弯" ----
+ *
+ * 时间 ≠ 角度：400ms 的闭眼转弯，实际转过的角度取决于电池电压、轮胎
+ * 打滑和地面摩擦 —— 这就是"有时转不够、有时转过头"的来源。
+ *
+ * 现在用两个编码器的测速积分出偏航角：
+ *      yaw += (v_right - v_left) / 轮距 × dt
+ * 角点事件里记下起始 yaw，转到目标角度再开始找线。
+ *
+ * 【LINE_ACUTE_TURN_DEG 怎么定】
+ *   V 形锐角的外角（= 车头需要转过的角度）一般在 110~130°。
+ *   先按 115° 跑，串口 [L] 行末尾的 y 字段能看到实时 yaw，
+ *   跑完看"重新找到线时的 yaw 增量"，就能反过来标定这个弯到底要多少度。
+ */
+#define LINE_ACUTE_TURN_DEG          115.0f
+
+/*
+ * 承诺转向的兜底超时（ms）。
+ * 编码器打滑、轮子被卡住时 yaw 不会增长，靠这个超时退出，防止原地转圈。
+ */
+#define LINE_ACUTE_COMMIT_TIMEOUT_MS 1500U
 
 /*
  * 角点期间遇到 ALL（整片全黑）时，改用锁存方向满舵。
@@ -687,9 +708,24 @@ typedef struct
     uint8_t  corner_dir_src;
     /* 出弯后方向记忆还剩多少拍（见 LINE_CORNER_DIR_HOLD_CYCLES） */
     uint8_t  corner_dir_hold;
+
+    /*
+     * ---- 编码器偏航角（方案 C：定角转弯）----
+     * yaw_deg       : 累计偏航角，度；左转为正
+     * corner_yaw0   : 角点事件开始时的 yaw，用来算"已经转了多少"
+     * last_yaw_tick : 上一次积分的 tick，用来取真实 dt
+     * commit_active : 1 = 正在执行承诺转向
+     * commit_done   : 1 = 本次搜索已经做过承诺转向（避免重复触发）
+     */
+    float    yaw_deg;
+    float    corner_yaw0;
+    uint32_t last_yaw_tick;
+    uint8_t  commit_active;
+    uint8_t  commit_done;
+    int8_t   commit_dir;     /* 承诺转向的方向（锁存时固定，防止中途被清） */
     /* 本次角点事件是否出现过"锐角证据"（FORK / ALL） */
     uint8_t  corner_acute;
-    /* 承诺转向剩余时间 ms（见 LINE_ACUTE_MIN_TURN_MS） */
+    /* 承诺转向剩余时间 ms（兜底超时，见 LINE_ACUTE_COMMIT_TIMEOUT_MS） */
     uint16_t commit_ms;
     uint8_t  all_assist;
     uint8_t  all_count;
