@@ -155,6 +155,8 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->corner_dir     = 0;
     pd->corner_dir_src = 0U;
     pd->corner_dir_hold = 0U;
+    pd->corner_acute   = 0U;
+    pd->commit_ms      = 0U;
     pd->all_assist     = 0U;
     pd->all_count      = 0U;
     pd->scene_last     = 0U;
@@ -315,6 +317,20 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             }
 
             /*
+             * 新事件开始：先清掉上一段的方向，再采纳本帧证据。
+             * （corner_dir_hold 不清 —— 它是给"出弯后立刻丢线"兜底用的）
+             */
+            if ((pd->corner_active == 0U) &&
+                (pd->corner_confirm >= LINE_CORNER_CONFIRM_CYCLES))
+            {
+                pd->corner_dir     = 0;
+                pd->corner_dir_src = 0U;
+                pd->corner_acute   = 0U;
+                pd->corner_active  = 1U;
+                pd->corner_release = 0U;
+            }
+
+            /*
              * 方向锁存 + 优先级。
              *
              * 以前的写法是"第一帧证据说了算"，实测（logs/capture.log）
@@ -338,19 +354,14 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                 pd->corner_dir_hold = LINE_CORNER_DIR_HOLD_CYCLES;
             }
 
-            if (pd->corner_confirm >= LINE_CORNER_CONFIRM_CYCLES)
+            /*
+             * 锐角证据：FORK（两条腿同时可见）或 ALL（整片全黑）。
+             * 出现过的角点事件，丢线后要做"承诺转向"，见 LINE_ACUTE_MIN_TURN_MS。
+             */
+            if ((gray->scene == GRAY_SCENE_FORK) ||
+                (gray->scene == GRAY_SCENE_ALL))
             {
-                if (pd->corner_active == 0U)
-                {
-                    /*
-                     * 新事件开始：清掉上一段的方向，避免旧方向挡住新证据。
-                     * （corner_dir_hold 不清 —— 它是给"出弯后立刻丢线"兜底用的）
-                     */
-                    pd->corner_dir     = 0;
-                    pd->corner_dir_src = 0U;
-                }
-                pd->corner_active  = 1U;
-                pd->corner_release = 0U;
+                pd->corner_acute = 1U;
             }
         }
         else
@@ -427,6 +438,23 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
     else
     {
         pd->lost_count = 0U;
+    }
+
+    /* ---------- 3b. 锐角"承诺转向" ---------- */
+    /*
+     * 见 LINE_ACUTE_MIN_TURN_MS 的说明：锐角丢线后先闭眼朝锁存方向转一段，
+     * 这几拍即使看到线也不认（否则会把刚走过的那条腿当成"找回来了"）。
+     *
+     * ⚠️ 必须放在第 3 步"丢线计数"之后：那一步在没丢线时会把 lost_count 清零，
+     *    放前面会被它覆盖掉。
+     */
+    if (pd->commit_ms > 0U)
+    {
+        pd->commit_ms = (uint16_t)((pd->commit_ms > LINE_PD_PERIOD_MS)
+                                   ? (pd->commit_ms - LINE_PD_PERIOD_MS)
+                                   : 0U);
+        pd->lost_count    = (uint8_t)(LINE_LOST_TOLERANCE + 1U);
+        pd->recover_count = 0U;
     }
 
     /* ---------- 4. 微分项：带低通滤波，首拍/不可导的边沿不做微分 ---------- */
@@ -572,19 +600,24 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             if (((pd->corner_active != 0U) || (pd->corner_dir_hold > 0U)) &&
                 (pd->corner_dir != 0))
             {
-                /* 来源1：角点事件（或刚出弯的记忆）锁存的方向 */
+                /*
+                 * 来源1：角点事件（或刚出弯的记忆）锁存的方向。
+                 *
+                 * 【为什么不再和实测位置做"冲突检查"】
+                 *   车在锐角弯转过头之后，实测位置会指回刚走过的那条腿；
+                 *   按它修方向，车就顺着走过的赛道往回跑
+                 *   （实车日志 17:36:54：cd=+1，丢线后却向右搜，随后沿旧线返回）。
+                 *   角点方向来自 SIDE/FORK 的直接观测，这里信它。
+                 */
                 dir = pd->corner_dir;
 
                 /*
-                 * 一致性检查：锁存方向来自 SIDE / FORK 的启发式，
-                 * 而 last_valid 是直接测到的线位置。
-                 * 两者明显相反时信实测（实车日志里出现过 SIDE_L + cd=-1
-                 * + last_valid=+2.2cm 的情况，按锁存方向会先往反方向扫）。
+                 * 锐角事件：进入搜索后先"闭眼"朝这个方向再转一段时间，
+                 * 把回来那条腿扫过去，避免刚丢线就把它当成找回来了。
                  */
-                if ((abs_last >= LINE_SEARCH_CONFLICT_CM) &&
-                    ((last_cm > 0.0f) != (dir > 0)))
+                if (pd->corner_acute != 0U)
                 {
-                    dir = (last_cm > 0.0f) ? 1 : -1;
+                    pd->commit_ms = LINE_ACUTE_MIN_TURN_MS;
                 }
             }
             else if (abs_last >= LINE_SEARCH_MIN_INFO_CM)

@@ -426,14 +426,26 @@
 #define LINE_CORNER_DIR_HOLD_CYCLES 15U
 
 /*
- * 锁存方向与"最后有效位置"明显矛盾时，改用实测位置。
+ * ---- 锐角弯的"承诺转向" ----
  *
- * 典型场景（实车日志 17:12:57）：
- *   SIDE_L 已经说明左半边全黑（该左转），锁存方向却是 cd=-1（右），
- *   同时 last_valid = +2.2cm 也明确在左 —— 两个直接观测一致地反对锁存值。
- * 这时信实测位置，搜索方向能少绕一圈。
+ * 【问题】（实车日志 17:36:53~54）
+ *   V 形锐角的顶点处，车要么转不够角度、要么丢线后立刻"看见"了
+ *   自己刚走过的那条腿，于是原地停止搜索、顺着旧线往回跑。
+ *   探头扫过旧腿的时间往往只有几十毫秒，按现在的"连续 2 拍确认"
+ *   就会把它当成找回来了。
+ *
+ * 【做法】
+ *   如果丢线发生在"锐角证据"（FORK 双簇 / ALL 全黑）的角点事件里，
+ *   进入搜索后先闭眼朝锁存方向再转这么久（这段时间内看到线也不算数），
+ *   把旧腿扫过去，之后才允许重新捕获。
+ *
+ * 【取值】
+ *   搜索转速 = 24 cm/s 原地转，偏航角速度 (24+24)/16cm ≈ 3 rad/s ≈ 172°/s。
+ *     400ms ≈ 69°，加上角点判定前 PD 已经转过的角度，足够越过一条旧腿；
+ *   调大：更不容易被旧腿骗到，但直角弯可能转过头；
+ *   调小：接近旧行为。
  */
-#define LINE_SEARCH_CONFLICT_CM     1.0f
+#define LINE_ACUTE_MIN_TURN_MS      400U
 
 /*
  * 角点期间遇到 ALL（整片全黑）时，改用锁存方向满舵。
@@ -675,6 +687,10 @@ typedef struct
     uint8_t  corner_dir_src;
     /* 出弯后方向记忆还剩多少拍（见 LINE_CORNER_DIR_HOLD_CYCLES） */
     uint8_t  corner_dir_hold;
+    /* 本次角点事件是否出现过"锐角证据"（FORK / ALL） */
+    uint8_t  corner_acute;
+    /* 承诺转向剩余时间 ms（见 LINE_ACUTE_MIN_TURN_MS） */
+    uint16_t commit_ms;
     uint8_t  all_assist;
     uint8_t  all_count;
     uint8_t  scene_last;
