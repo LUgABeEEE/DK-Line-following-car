@@ -120,6 +120,7 @@ void Speed_PID_Reset(uint32_t motor)
     pid->target       = 0.0f;
     pid->measure      = 0.0f;
     pid->integral     = 0.0f;
+    pid->last_target  = 0.0f;
     pid->d_filt_state = 0.0f;
     pid->output       = 0.0f;
     pid->saturated    = 0U;
@@ -200,6 +201,27 @@ float Speed_PID_Update(uint32_t motor, float target)
         target = -pid->target_limit;
     }
     pid->target = target;
+
+    /*
+     * ---------- 2b. 目标方向反转：把积分清零 ----------
+     *
+     * 【为什么必须清】
+     *   实车日志（logs/serial_20261025_172300.log, 17:32:27.8）里出现过：
+     *     [B] t-24.0 m-3.1 o-18.5 i+22.2
+     *   B 轮被要求反转 24 cm/s，但积分还背着上一段前进攒下的 +22，
+     *   输出只剩 -18%，实际几乎不动（-3 cm/s）——
+     *   于是"原地右转"变成了"左轮前进、右轮不动"，车是平移不是旋转，
+     *   搜索永远扫不到线，最后超时停车。
+     *
+     *   积分分离（|误差| > 20 暂停积分）此时恰好把积分冻住：
+     *   目标从 +24 跳到 -24，误差 48 > 20，积分想卸也卸不掉。
+     *   所以在目标符号翻转的这一拍直接清零，重新从零建立。
+     */
+    if ((target * pid->last_target) < 0.0f)
+    {
+        pid->integral = 0.0f;
+    }
+    pid->last_target = target;
 
     /* ---------- 3. 偏差 ---------- */
     error = target - pid->measure;

@@ -63,6 +63,7 @@ typedef struct
     float   integral;       /* 积分累加量                                     */
     float   d_filt_state;   /* 微分项滤波状态                                 */
     float   output;         /* 最近一次算出的输出（占空比）                   */
+    float   last_target;    /* 上一拍目标速度，用于检测"目标反向"             */
     uint8_t saturated;      /* 0=正常，1=正向饱和，2=负向饱和                 */
 } Speed_PID_t;
 
