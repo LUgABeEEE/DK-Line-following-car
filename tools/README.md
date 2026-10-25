@@ -62,6 +62,11 @@ Request PIN code: 1234          # HC-05 默认 PIN，买回来没改过就是这
 bluetoothctl devices            # 列表里应该有 HC-05
 ```
 
+**本车实测**：HC-05 显示成 `Device 26:03:02:01:A5:F4 ?`（名字读出来是 `?`，
+这是正常的；`Paired/Bonded/Trusted` 都是 yes，UUID 里有 `Serial Port`）。
+扫描时还会看到一个 `26:03:02:02:A5:F4` —— 那是另一个 LE 设备
+（带腾讯 `0xfee7` 服务），**不是** HC-05，别配错。
+
 **不需要也不要 `rfcomm bind`** —— 本目录脚本直接连 MAC。
 
 ---
@@ -136,7 +141,9 @@ python3 tools/serial_summary.py logs/serial_20261025_165000.loop.csv
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| `连不上 … host is down` | HC-05 没上电 / 被手机占着 / 没配对 |
+| `bluetoothctl connect` 报 `BREDR.ProfileUnavailable` / `No more profiles` | **正常现象**。BlueZ 没有 SPP 守护进程，它只负责建 ACL 链路；SPP 数据要靠 RFCOMM socket。`bluetoothctl info <MAC>` 里 `Connected: yes` 就说明链路已通，直接用本目录脚本 |
+| 日志里 `[L]` 在 `sr` 处截断，后面紧跟 `[A]` | 固件 `HAL_UART_Transmit` 超时 50ms，而 9600 下 60 字节的 `[L]` 行要约 62ms，每行都在第 50 字节被切断。固件已改为 `BLE_TX_TIMEOUT_MS = 250ms`（构建标记 j→k），旧固件需重刷 |
+| 连不上 … host is down | HC-05 没上电 / 被手机占着 / 没配对 |
 | `Permission denied` | 少数内核上 RFCOMM socket 需要特权：`sudo python3 tools/...`，或改用 USB-TTL |
 | 通道试完都失败 | HC-05 的 SPP 通道一般就是 1；若改过，用 `--channel 2` 指定 |
 | 数据乱码 / 半行 | 波特率不对（USART2 是 9600）；或 EN 被拉高进了 AT 模式 |

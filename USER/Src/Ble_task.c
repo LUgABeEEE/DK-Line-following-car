@@ -38,7 +38,23 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "j"
+#define BLE_BUILD_TAG   "k"
+
+/*
+ * UART 发送超时，单位 ms。
+ *
+ * 【为什么必须按行长算，不能拍脑袋给 50】
+ *   USART2 是 9600 8N1，1 个字节约 1.04ms。
+ *   [L] 行现在有 60 字节左右，完整发完要约 62ms。
+ *   以前这里写 50U —— 结果是【每一行 [L] 都在 "sr" 处被截断】，
+ *   后面紧跟的 [A] 行被拼到同一行里，日志看起来像
+ *   "sc=NONE cd+0 sr[A] t0.0 ..."。
+ *   实车日志（logs/hc05test.log）里 22 行 [L] 全部截断，就是这么来的。
+ *
+ *   给到 250ms 留足余量：即使被更高优先级任务抢占几十毫秒，
+ *   也不会因为超时把一帧数据切掉半截。
+ */
+#define BLE_TX_TIMEOUT_MS   250U
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -116,6 +132,8 @@ static uint32_t s_gray_dump_tick = 0U;
 #define PID_DUMP_PERIOD_MS      200U
 
 static uint32_t s_pid_dump_tick = 0U;
+/* 内环两行的分频计数：每两次才发一次 [A]/[B]（2.5Hz），省 9600 带宽 */
+static uint8_t  s_speed_div = 0U;
 
 /* ------------------------------------------------------------------------- */
 /* 任务内部状态                                                                */
@@ -153,7 +171,7 @@ static void BleTask_Print(const char *fmt, ...)
 
     if (len > 0)
     {
-        (void)HAL_UART_Transmit(&huart2, (uint8_t *)buf, (uint16_t)len, 100U);
+        (void)HAL_UART_Transmit(&huart2, (uint8_t *)buf, (uint16_t)len, BLE_TX_TIMEOUT_MS);
     }
 }
 
@@ -190,7 +208,7 @@ static void BleTask_DumpGrayArray(char line_type, const uint16_t *arr)
             line[len + 1] = '\n';
             line[len + 2] = '\0';
             (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
-                                    (uint16_t)(len + 2), 50U);
+                                    (uint16_t)(len + 2), BLE_TX_TIMEOUT_MS);
         }
     }
 }
@@ -249,7 +267,7 @@ static void BleTask_DumpGray(void)
     if (len > 0)
     {
         (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
-                                (uint16_t)strlen(line), 50U);
+                                (uint16_t)strlen(line), BLE_TX_TIMEOUT_MS);
     }
 
     BleTask_DumpGrayArray('A', g_gray.analog);
@@ -277,7 +295,7 @@ static void BleTask_DumpGray(void)
                                     g_gray.last_valid_mm * 0.1f));
     }
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
-                            (uint16_t)strlen(line), 50U);
+                            (uint16_t)strlen(line), BLE_TX_TIMEOUT_MS);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -402,7 +420,7 @@ static const char *BleTask_Fmt1(char *buf, uint16_t size, float value)
 /*
  * 输出一次 PID 运行数据：外环一行 + 内环两行。
  */
-static void BleTask_DumpPid(void)
+static void BleTask_DumpPid(uint8_t dump_speed)
 {
     char line[128];
     char b1[14];
@@ -483,7 +501,16 @@ static void BleTask_DumpPid(void)
         }
     }
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
-                            (uint16_t)strlen(line), 50U);
+                            (uint16_t)strlen(line), BLE_TX_TIMEOUT_MS);
+
+    /*
+     * 内环两行按 2.5Hz 分频：dump_speed=0 的这一拍照常只发外环。
+     * 9600 带宽下三行同时 5Hz 会超过 60%，挤掉灰度行并拖慢急停响应。
+     */
+    if (dump_speed == 0U)
+    {
+        return;
+    }
 
     /*
      * ---- 内环 A ----
@@ -505,7 +532,7 @@ static void BleTask_DumpPid(void)
                    (unsigned int)Encoder_GetCount(ENCODER_A),
                    BleTask_Fmt1(b5, sizeof(b5), Encoder_GetDistance(ENCODER_A)));
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
-                            (uint16_t)strlen(line), 50U);
+                            (uint16_t)strlen(line), BLE_TX_TIMEOUT_MS);
 
     /* ---- 内环 B ---- */
     (void)snprintf(line, sizeof(line), "[B] t%s m%s o%s i%s c%u d%s\r\n",
@@ -516,7 +543,7 @@ static void BleTask_DumpPid(void)
                    (unsigned int)Encoder_GetCount(ENCODER_B),
                    BleTask_Fmt1(b5, sizeof(b5), Encoder_GetDistance(ENCODER_B)));
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
-                            (uint16_t)strlen(line), 50U);
+                            (uint16_t)strlen(line), BLE_TX_TIMEOUT_MS);
 }
 
 /*
@@ -546,7 +573,7 @@ static void BleTask_DumpGains(void)
                    BleTask_Fmt1(b4, sizeof(b4),
                                 Speed_PID_GetGain(MOTOR_A, SPEED_PID_GAIN_KFF)));
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
-                            (uint16_t)strlen(line), 50U);
+                            (uint16_t)strlen(line), BLE_TX_TIMEOUT_MS);
 
     /*
      * 外环增益单独一行。
@@ -557,7 +584,7 @@ static void BleTask_DumpGains(void)
                    BleTask_Fmt1(b2, sizeof(b2), g_line_pd.kd),
                    BleTask_Fmt1(b3, sizeof(b3), g_line_pd.base_speed));
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
-                            (uint16_t)strlen(line), 50U);
+                            (uint16_t)strlen(line), BLE_TX_TIMEOUT_MS);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -585,7 +612,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-25j (built " __DATE__ " " __TIME__ ")\r\n");
+    BleTask_Print("[VER] line-follower 2025-10-25k (built " __DATE__ " " __TIME__ ")\r\n");
     BleTask_Print("[BleTask] X=stop I=scan I2C\r\n");
 
     /* 同步一次连接状态，避免把"上电时已连接"误报成一次新连接 */
@@ -651,13 +678,17 @@ static void BleTask_Main(void *argument)
         /*
          * ---- PID 运行数据 ----
          *
-         * 200ms 一次（5Hz），三行共约 72 字节 = 75ms，
-         * 占 9600 波特率约 37% 带宽，和灰度数据错开不冲突。
+         * 外环 [L] 200ms 一次（5Hz）：60 字节 ≈ 62ms，占 9600 约 31%
+         * 内环 [A]/[B] 降到 2.5Hz（隔一次发一次）：
+         *   三行同时 5Hz 时合计约 124 字节 = 129ms/200ms，
+         *   已经占掉 65% 带宽，会挤掉灰度行、拖慢急停响应。
+         *   控制分析主要看 [L]，内环看趋势 2.5Hz 足够。
          */
         if ((HAL_GetTick() - s_pid_dump_tick) >= PID_DUMP_PERIOD_MS)
         {
             s_pid_dump_tick = HAL_GetTick();
-            BleTask_DumpPid();
+            s_speed_div ^= 1U;
+            BleTask_DumpPid(s_speed_div);
         }
 
         /* ---- 连接状态变化：更新 LED 并提示 ---- */
@@ -681,7 +712,7 @@ static void BleTask_Main(void *argument)
                      * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
                      * 放在这里就能保证每次连接都能确认。
                      */
-                    BleTask_Print("[VER] line-follower 2025-10-25j (built "
+                    BleTask_Print("[VER] line-follower 2025-10-25k (built "
                                   __DATE__ " " __TIME__ ")\r\n");
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");
                 }
