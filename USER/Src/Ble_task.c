@@ -545,7 +545,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-25d (built " __DATE__ " " __TIME__ ")\r\n");
+    BleTask_Print("[VER] line-follower 2025-10-25e (built " __DATE__ " " __TIME__ ")\r\n");
     BleTask_Print("[BleTask] X=stop I=scan I2C\r\n");
 
     /* 同步一次连接状态，避免把"上电时已连接"误报成一次新连接 */
@@ -633,6 +633,16 @@ static void BleTask_Main(void *argument)
                     s_connect_count++;
                     BleTask_Print("[BLE] connected (times=%lu)\r\n",
                                   (unsigned long)s_connect_count);
+
+                    /*
+                     * 【每次连上都打印版本】
+                     *
+                     * 原来只在任务启动时打印一次，而那时手机通常还没连上，
+                     * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
+                     * 放在这里就能保证每次连接都能确认。
+                     */
+                    BleTask_Print("[VER] line-follower 2025-10-25e (built "
+                                  __DATE__ " " __TIME__ ")\r\n");
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");
                 }
                 else
