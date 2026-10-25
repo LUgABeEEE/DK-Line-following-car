@@ -161,6 +161,7 @@ def pump(src, sink: TelemetrySink, args) -> int:
     lines = 0
     t0 = time.time()
     last_report = t0
+    last_data = t0
 
     while True:
         if args.duration and (time.time() - t0) >= args.duration:
@@ -170,6 +171,12 @@ def pump(src, sink: TelemetrySink, args) -> int:
         except (OSError, ValueError):
             break
         if not ready:
+            # 看门狗：HC-05 断电/离开范围时，BlueZ 有时不主动关 socket，
+            # select 会永远等下去 —— 车上每秒 10 行数据，静默超过阈值就重连。
+            if (args.idle_timeout > 0) and ((time.time() - last_data) > args.idle_timeout):
+                print(f"\n[capture] 已 {args.idle_timeout:g}s 没有数据，判定链路失效，重连",
+                      file=sys.stderr)
+                break
             continue
         try:
             chunk = src.read(4096)
@@ -180,6 +187,7 @@ def pump(src, sink: TelemetrySink, args) -> int:
             print("\n[capture] 对端关闭连接", file=sys.stderr)
             break
 
+        last_data = time.time()
         buf += chunk.decode("utf-8", "replace")
         while "\n" in buf:
             line, buf = buf.split("\n", 1)
@@ -229,6 +237,8 @@ def main() -> int:
     ap.add_argument("--no-reconnect", dest="reconnect", action="store_false")
     ap.add_argument("--reconnect-delay", type=float, default=2.0,
                     help="重连间隔秒数（默认 2）")
+    ap.add_argument("--idle-timeout", type=float, default=5.0,
+                    help="连续这么多秒没有数据就判定链路失效并重连（默认 5，0=关闭）")
     ap.add_argument("--no-csv", action="store_true", help="只写原始 .log")
     ap.add_argument("--echo", action="store_true", help="同时打印到终端")
     args = ap.parse_args()

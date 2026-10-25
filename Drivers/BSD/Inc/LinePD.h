@@ -414,6 +414,28 @@
 #define LINE_CORNER_RELEASE_CYCLES  3U
 
 /*
+ * 出弯后方向记忆保留多少拍（40ms/拍）。
+ *
+ * 【为什么需要】
+ *   实测锐角弯常见的时序是：SIDE/FORK -> 短暂 LINE -> 立刻丢线。
+ *   3 拍 LINE 就释放角点事件，corner_dir 被清零，
+ *   丢线时既没有锁存方向、最后位置又接近 0（车正压在弯心），
+ *   只能退回默认方向盲扫 —— 猜对猜错各一半。
+ *   保留 15 拍（600ms），让"刚出弯就丢线"这种情况还能用上刚才的方向。
+ */
+#define LINE_CORNER_DIR_HOLD_CYCLES 15U
+
+/*
+ * 锁存方向与"最后有效位置"明显矛盾时，改用实测位置。
+ *
+ * 典型场景（实车日志 17:12:57）：
+ *   SIDE_L 已经说明左半边全黑（该左转），锁存方向却是 cd=-1（右），
+ *   同时 last_valid = +2.2cm 也明确在左 —— 两个直接观测一致地反对锁存值。
+ * 这时信实测位置，搜索方向能少绕一圈。
+ */
+#define LINE_SEARCH_CONFLICT_CM     1.2f
+
+/*
  * 角点期间遇到 ALL（整片全黑）时，改用锁存方向满舵。
  *
  * 【原因】
@@ -651,6 +673,8 @@ typedef struct
     int8_t   corner_dir;
     /* 方向证据来源：0 = 无，1 = SIDE（哪半边全黑，优先），2 = FORK（另一条腿） */
     uint8_t  corner_dir_src;
+    /* 出弯后方向记忆还剩多少拍（见 LINE_CORNER_DIR_HOLD_CYCLES） */
+    uint8_t  corner_dir_hold;
     uint8_t  all_assist;
     uint8_t  all_count;
     uint8_t  scene_last;

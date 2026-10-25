@@ -154,6 +154,7 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->corner_release = 0U;
     pd->corner_dir     = 0;
     pd->corner_dir_src = 0U;
+    pd->corner_dir_hold = 0U;
     pd->all_assist     = 0U;
     pd->all_count      = 0U;
     pd->scene_last     = 0U;
@@ -333,10 +334,21 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                     pd->corner_dir     = evidence;
                     pd->corner_dir_src = src;
                 }
+                /* 只要这一拍还有方向证据，就把"出弯后记忆"续上 */
+                pd->corner_dir_hold = LINE_CORNER_DIR_HOLD_CYCLES;
             }
 
             if (pd->corner_confirm >= LINE_CORNER_CONFIRM_CYCLES)
             {
+                if (pd->corner_active == 0U)
+                {
+                    /*
+                     * 新事件开始：清掉上一段的方向，避免旧方向挡住新证据。
+                     * （corner_dir_hold 不清 —— 它是给"出弯后立刻丢线"兜底用的）
+                     */
+                    pd->corner_dir     = 0;
+                    pd->corner_dir_src = 0U;
+                }
                 pd->corner_active  = 1U;
                 pd->corner_release = 0U;
             }
@@ -356,15 +368,29 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                 }
                 if (pd->corner_release >= LINE_CORNER_RELEASE_CYCLES)
                 {
-                    pd->corner_active  = 0U;
-                    pd->corner_release = 0U;
-                    pd->corner_dir     = 0;
-                    pd->corner_dir_src = 0U;
+                    /*
+                     * 出弯：不立刻清方向。保留 LINE_CORNER_DIR_HOLD_CYCLES 拍
+                     * （600ms），让"刚出弯就丢线"还能用上刚才的转弯方向；
+                     * 真正的清除在下面的 hold 衰减里做。
+                     */
+                    pd->corner_active   = 0U;
+                    pd->corner_release  = 0U;
+                    pd->corner_dir_hold = LINE_CORNER_DIR_HOLD_CYCLES;
                 }
             }
             else
             {
                 pd->corner_release = 0U;
+            }
+        }
+        else if (pd->corner_dir_hold > 0U)
+        {
+            /* 不在角点事件里：方向记忆按拍衰减，到 0 才真正清除 */
+            pd->corner_dir_hold--;
+            if (pd->corner_dir_hold == 0U)
+            {
+                pd->corner_dir     = 0;
+                pd->corner_dir_src = 0U;
             }
         }
     }
@@ -540,34 +566,43 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
              * 两者都失效时由双向扫描兜底。
              */
             int8_t dir = 0;
+            float  last_cm  = gray->last_valid_mm * 0.1f;
+            float  abs_last = (last_cm < 0.0f) ? -last_cm : last_cm;
 
-            if ((pd->corner_active != 0U) && (pd->corner_dir != 0))
+            if (((pd->corner_active != 0U) || (pd->corner_dir_hold > 0U)) &&
+                (pd->corner_dir != 0))
             {
-                /* 来源1：角点事件内锁存的弯道方向，最可靠 */
+                /* 来源1：角点事件（或刚出弯的记忆）锁存的方向 */
                 dir = pd->corner_dir;
-            }
-            else
-            {
-                /* 来源2：最后一次有效位置，但要求偏离足够明显 */
-                float last_cm  = gray->last_valid_mm * 0.1f;
-                float abs_last = (last_cm < 0.0f) ? -last_cm : last_cm;
 
-                if (abs_last >= LINE_SEARCH_MIN_INFO_CM)
+                /*
+                 * 一致性检查：锁存方向来自 SIDE / FORK 的启发式，
+                 * 而 last_valid 是直接测到的线位置。
+                 * 两者明显相反时信实测（实车日志里出现过 SIDE_L + cd=-1
+                 * + last_valid=+2.2cm 的情况，按锁存方向会先往反方向扫）。
+                 */
+                if ((abs_last >= LINE_SEARCH_CONFLICT_CM) &&
+                    ((last_cm > 0.0f) != (dir > 0)))
                 {
                     dir = (last_cm > 0.0f) ? 1 : -1;
                 }
-                else
-                {
-                    /*
-                     * 来源3：没有任何方向信息。
-                     *
-                     * 注意这里【不是放弃搜索】—— 双向扫描是系统性的，
-                     * 会依次覆盖两个方向，起点方向不影响最终能否找到。
-                     * 所以这里只决定"先扫哪边"，带一个明确的默认值，
-                     * 而不是随机的或者隐含的。
-                     */
-                    dir = (int8_t)LINE_SEARCH_DEFAULT_DIR;
-                }
+            }
+            else if (abs_last >= LINE_SEARCH_MIN_INFO_CM)
+            {
+                /* 来源2：最后一次有效位置，但要求偏离足够明显 */
+                dir = (last_cm > 0.0f) ? 1 : -1;
+            }
+            else
+            {
+                /*
+                 * 来源3：没有任何方向信息。
+                 *
+                 * 注意这里【不是放弃搜索】—— 双向扫描是系统性的，
+                 * 会依次覆盖两个方向，起点方向不影响最终能否找到。
+                 * 所以这里只决定"先扫哪边"，带一个明确的默认值，
+                 * 而不是随机的或者隐含的。
+                 */
+                dir = (int8_t)LINE_SEARCH_DEFAULT_DIR;
             }
 
             pd->search_dir = dir;

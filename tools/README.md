@@ -90,6 +90,10 @@ python3 tools/bt_serial_capture.py --mac AA:BB:CC:DD:EE:FF --no-csv
 python3 tools/bt_serial_capture.py --mac AA:BB:CC:DD:EE:FF --reconnect-delay 3
 ```
 
+**空闲看门狗**：车上每秒约 10 行数据，如果链路静默超过 5 秒（`--idle-timeout`，
+默认 5），脚本会判定链路失效并重连 —— 之前出现过 BlueZ 显示 `Connected: yes`
+但 RFCOMM 已经死掉、`select` 永远不返回的情况，采集会静默假死。
+
 后台跑（关掉终端也不停）：
 
 ```bash
