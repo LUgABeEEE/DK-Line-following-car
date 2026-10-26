@@ -354,7 +354,7 @@ python3 tools/tag_report.py logs/serial_20261026_*.log
 跑过半圈（50%）→ 武装
 灰度条瞬间全黑 1~3 拍（启停线 5cm 横线）→ 判定到位点
 限速 12cm/s，再直行 17cm（灰度条 → 测试点的距离）
-到点前 1cm 硬刹 → 切 STOP + 清积分 + 制动，串口打印 [RACE] stop
+到点前 2cm 硬刹 → 切 STOP + 清积分 + 制动，串口打印 [RACE] stop
 兜底：如果没识别到启停线，里程到"周长−2cm"也停
 ```
 
@@ -389,6 +389,7 @@ python3 tools/tag_report.py logs/serial_20261026_*.log
 | `LINE_RACE_DETECT_CHANNELS` | 6 | 8 路里至少几路全黑；误触发就加到 7 |
 | `LINE_RACE_PULSE_MAX` | 3 | 全黑持续超过几拍算角点（不算启停线） |
 | `LINE_RACE_ARM_FRAC` | 0.50 | 跑过半圈才允许识别 |
+| `LINE_RACE_BRAKE_MARGIN_CM` | 2.0 | 到点前多少厘米硬刹；停过线就加、停早了就减 |
 | `LINE_RACE_FALLBACK_CM` | 2.0 | 里程兜底（仅周长模式） |
 | `LINE_RACE_ARM_MIN_CM` | 120 | 自适应模式的武装距离 |
 | `LINE_RACE_MAX_CM` | 2000 | 自适应模式的安全上限 |

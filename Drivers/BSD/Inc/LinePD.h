@@ -279,7 +279,14 @@
 #define LINE_RACE_PULSE_MAX         3U      /* 全黑持续超过这么多拍 = 角点，不算 */
 #define LINE_RACE_DETECT_ERR_CM     1.2f    /* 识别时横向误差必须小 */
 #define LINE_RACE_APPROACH_CMS      12.0f   /* 识别后的接近速度 */
-#define LINE_RACE_BRAKE_MARGIN_CM   1.0f    /* 到点前 1cm 开始硬刹 */
+/*
+ * 到点前多少厘米开始硬刹。
+ *
+ * 这个值同时吸收"识别延迟 + 刹车距离"：识别是在全黑脉冲结束那一拍才确认的，
+ * 车已经多走了几十毫秒；硬刹本身也要滑 0.3~0.5cm。
+ * 实测停车偏过 1cm -> 把这里加 1（2.0）；停早了就减。
+ */
+#define LINE_RACE_BRAKE_MARGIN_CM   2.0f
 #define LINE_RACE_FALLBACK_CM       2.0f    /* 里程兜底：差 2cm 还没识别到就按里程停 */
 
 /*
