@@ -139,6 +139,8 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->d_filter_state = 0.0f;
     pd->steer          = 0.0f;
     pd->speed          = 0.0f;
+    pd->straight_ticks = 0U;
+    pd->speed_boost    = 0.0f;
     pd->lost_count     = 0U;
     pd->line_lost      = 0U;
     pd->first_run      = 1U;
@@ -569,45 +571,134 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
     }
     pd->steer = steer;
 
-    /* ---------- 6. 弯道减速：偏离越大跑得越慢，给转向留时间 ---------- */
-    slow_factor = 1.0f;
-    if ((LINE_CURVE_SLOW_MIN < 1.0f) && (error_limit > 0.001f))
-    {
-        float normalized = (error < 0.0f) ? -error : error;   /* 取绝对值 */
-        normalized /= error_limit;                            /* 0 ~ 1      */
-        if (normalized > 1.0f)
-        {
-            normalized = 1.0f;
-        }
-        /* 线性插值：正中时为 1.0，偏到极限时为 LINE_CURVE_SLOW_MIN */
-        slow_factor = 1.0f - (normalized * (1.0f - LINE_CURVE_SLOW_MIN));
-    }
+    /* ---------- 6. 速度规划：直道加速 / 弧线按曲率减速 / 直角降速 ---------- */
     /*
-     * 基础速度带起步斜坡。
+     * 简单赛道（只有弧线和直角）的优化目标：
+     *   直道尽量快、弯道按"曲率深度"提前减速、直角/锐角稳。
      *
-     * 目标值 = base_speed × 弯道减速系数；
-     * 实际值 pd->speed 每拍最多变化 (斜率 × 外环周期)，
-     * 这样从 0 起步或者中途调大 LBAS 都不会出现阶跃。
+     * 曲率深度由三部分组成：
+     *   1) |error|    偏离越大越慢  —— 最直观的弯道深度
+     *   2) |steer|    转向需求越大越慢 —— 差速会先于误差饱和，相当于提前量
+     *   3) |d(error)| 误差变化率 —— 进弯前就开始减，不等误差长大
+     *
+     * 直道加速：连续若干拍"误差小 + 转向小 + 深度低"才逐步加，最多 +25%；
+     * 一旦进弯立刻按 LINE_BOOST_DECAY_STEP 收回，避免把速度带进弯里。
      */
     {
-        float target_speed = pd->base_speed * slow_factor;
-        float step = LINE_SPEED_RAMP_CMS_PER_SEC
-                     * ((float)LINE_PD_PERIOD_MS / 1000.0f);
+        float e_norm = 0.0f;
+        float s_norm = 0.0f;
+        float d_norm;
+        float depth;
 
-        if (pd->speed < target_speed)
+        if (error_limit > 0.001f)
         {
-            pd->speed += step;
-            if (pd->speed > target_speed)
+            e_norm = (error < 0.0f) ? -error : error;
+            e_norm /= error_limit;
+            if (e_norm > 1.0f)
             {
-                pd->speed = target_speed;
+                e_norm = 1.0f;
             }
         }
-        else if (pd->speed > target_speed)
+
+        if (pd->diff_limit > 0.001f)
         {
-            pd->speed -= step;
+            s_norm = (steer < 0.0f) ? -steer : steer;
+            s_norm /= pd->diff_limit;
+            if (s_norm > 1.0f)
+            {
+                s_norm = 1.0f;
+            }
+        }
+
+        d_norm = (derivative < 0.0f) ? -derivative : derivative;
+        d_norm /= LINE_LEAD_DERR_MAX;
+        if (d_norm > 1.0f)
+        {
+            d_norm = 1.0f;
+        }
+
+        depth = (LINE_DEPTH_W_ERR * e_norm) + (LINE_DEPTH_W_STEER * s_norm);
+        if ((LINE_LEAD_WEIGHT * d_norm) > depth)
+        {
+            depth = LINE_LEAD_WEIGHT * d_norm;
+        }
+        if (depth > 1.0f)
+        {
+            depth = 1.0f;
+        }
+
+        slow_factor = 1.0f - (depth * (1.0f - LINE_CURVE_SLOW_MIN));
+
+        /* 角点事件期间再压一档：直角/锐角宁可慢一点，也不要冲过头 */
+        if ((pd->corner_active != 0U) && (slow_factor > LINE_CORNER_SLOW_MAX))
+        {
+            slow_factor = LINE_CORNER_SLOW_MAX;
+        }
+
+        /* 直道加速：仅在线、且三个量都小时才给 */
+        if ((pd->corner_active == 0U) &&
+            (((error < 0.0f) ? -error : error) < LINE_STRAIGHT_EPS_CM) &&
+            (((steer < 0.0f) ? -steer : steer) < LINE_STRAIGHT_STEER_CM) &&
+            (depth < 0.30f))
+        {
+            if (pd->straight_ticks < LINE_STRAIGHT_TICKS)
+            {
+                pd->straight_ticks++;
+            }
+            if (pd->straight_ticks >= LINE_STRAIGHT_TICKS)
+            {
+                pd->speed_boost += LINE_STRAIGHT_BOOST_STEP;
+                if (pd->speed_boost > LINE_STRAIGHT_BOOST_MAX)
+                {
+                    pd->speed_boost = LINE_STRAIGHT_BOOST_MAX;
+                }
+            }
+        }
+        else
+        {
+            pd->straight_ticks = 0U;
+            pd->speed_boost -= LINE_BOOST_DECAY_STEP;
+            if (pd->speed_boost < 0.0f)
+            {
+                pd->speed_boost = 0.0f;
+            }
+        }
+
+        slow_factor *= (1.0f + pd->speed_boost);
+
+        /*
+         * 基础速度带斜坡。
+         *
+         * 目标值 = base_speed × 速度系数（弯道减速 × 直道加速）；
+         * 实际值 pd->speed 每拍最多变化一定量，避免阶跃。
+         * 减速斜坡是加速的两倍：进弯要果断，出弯可以慢慢来。
+         */
+        {
+            float target_speed = pd->base_speed * slow_factor;
+            float dt_sec  = (float)LINE_PD_PERIOD_MS / 1000.0f;
+            float step_up = LINE_SPEED_RAMP_CMS_PER_SEC * dt_sec;
+            float step_dn = step_up * LINE_DOWN_RAMP_MULT;
+
+            if (target_speed > pd->speed_limit)
+            {
+                target_speed = pd->speed_limit;
+            }
+
             if (pd->speed < target_speed)
             {
-                pd->speed = target_speed;
+                pd->speed += step_up;
+                if (pd->speed > target_speed)
+                {
+                    pd->speed = target_speed;
+                }
+            }
+            else if (pd->speed > target_speed)
+            {
+                pd->speed -= step_dn;
+                if (pd->speed < target_speed)
+                {
+                    pd->speed = target_speed;
+                }
             }
         }
     }

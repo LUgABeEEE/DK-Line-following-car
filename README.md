@@ -272,6 +272,52 @@ python3 tools/tag_report.py logs/serial_20261026_*.log
 输出每段的时长、模式分布、场景分布、角点事件数、丢线样本数、`|e|` 中位和里程增量，
 成功/失败一目了然；加 `--csv` 还能导出分段表。
 
+### 5.7 简单赛道速度规划（`simple-track` 分支）
+
+单独开了 `simple-track` 分支，针对**只有弧线和直角**的简单赛道做速度与稳定性优化；
+锐角/复杂赛道仍然用 `main`（构建 `t`，承诺转向 115°）。
+
+思路参考了这些公开实现：
+
+- [felipemmattia/PID_line_follower_robot](https://github.com/felipemmattia/PID_line_follower_robot)：
+  误差超过阈值判定入弯，按误差成比例降速，并给转弯分档的低速下限；
+- [Sndcooper/adaptive-line-follower](https://github.com/Sndcooper/adaptive-line-follower)：
+  "curve boost" —— 转弯时先轻后重，线还没找回就逐步加力，兼顾入弯稳定和出弯果断；
+- [deepjyoti-io/Adaptive-PID-line-follower](https://github.com/deepjyoti-io/Adaptive-PID-line-follower)：
+  8 路模拟量 + 动态速度缩放 + 丢线恢复；
+- 以及"adaptive speed control for line-following robots"这类专利/论文的共同做法：
+  速度是"偏离量 / 曲率"的函数，而不是常数。
+
+本分支实际实现（`Drivers/BSD/Src/LinePD.c` 第 6 步）：
+
+```text
+曲率深度 depth = 0.60 · |error|/误差上限 + 0.40 · |steer|/差速上限
+                 再用 |d(error)/dt| 做入弯预判（取两者较大值）
+速度系数   = 1 − depth · (1 − LINE_CURVE_SLOW_MIN)       // 0.40 为最慢
+角点事件   → 速度系数再压到 ≤ LINE_CORNER_SLOW_MAX（0.72）
+直道加速   → 连续 5 拍 |error|<0.35cm 且 |steer|<8cm/s，每拍 +3%，最高 +25%
+斜坡       → 加速 50 cm/s²，减速 100 cm/s²（进弯果断、出弯平缓）
+```
+
+调参（都在 `Drivers/BSD/Inc/LinePD.h`）：
+
+| 宏 | 默认 | 作用 |
+|---|---|---|
+| `LINE_STRAIGHT_BOOST_MAX` | 0.25 | 直道最多加速 25%；轮子够用可以到 0.35 |
+| `LINE_STRAIGHT_TICKS` | 5 | 连续居中多少拍才开始加速（40ms 一拍） |
+| `LINE_CORNER_SLOW_MAX` | 0.72 | 角点事件期间的速度上限系数 |
+| `LINE_DEPTH_W_STEER` | 0.40 | 差速需求在曲率深度里的权重（越大越早减速） |
+| `LINE_LEAD_WEIGHT` | 0.70 | 入弯预判强度 |
+| `LINE_DOWN_RAMP_MULT` | 2.0 | 减速斜坡相对加速的倍数 |
+
+注意：
+
+- 速度上限仍是 `LINE_SPEED_LIMIT`（75 cm/s），实际能跑多快受内环和电机限制 ——
+  实测 B 轮在 57 cm/s 时已经打满占空比，建议 `LBAS` 先按 30~35 试；
+- 直道加速只在"误差和转向都很小"时生效，进弯会立刻收回，不会把速度带进弯里；
+- 直角弯靠"角点事件限速 + 差速放宽 1.35 倍"通过，不额外做定角转弯
+  （定角转弯是锐角用的，简单赛道用不到）。
+
 ---
 
 ## 6. N20 实测标定结果（6 V 额定 / 7.4 V 电池 / 自带编码器）

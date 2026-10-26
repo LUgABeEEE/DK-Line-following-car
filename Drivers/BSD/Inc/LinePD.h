@@ -210,6 +210,39 @@
  */
 #define LINE_CURVE_SLOW_MIN         0.40f
 
+/*
+ * ---- simple track：简单赛道速度规划（只有弧线/直角的赛道）----
+ *
+ * 目标：直道快、入弯提前减速、直角稳。
+ * 参考网上常见做法：
+ *   - 按偏离量动态降速（felipemmattia/PID_line_follower_robot）
+ *   - 按转弯深度/持续时间动态加力（Sndcooper/adaptive-line-follower 的 curve boost）
+ *   - 8 路模拟量 + 动态速度缩放 + 丢线恢复（deepjyoti-io/Adaptive-PID-line-follower）
+ *
+ * 曲率深度 depth = W_ERR*|error|/err_max + W_STEER*|steer|/diff_limit，
+ * 再用 |d(error)/dt| 做入弯预判；depth=0 时全速，depth=1 时 LINE_CURVE_SLOW_MIN。
+ */
+#define LINE_DEPTH_W_ERR            0.60f
+#define LINE_DEPTH_W_STEER          0.40f
+
+/* 入弯预判：误差变化率超过这个值（cm/s）就按满深度处理 */
+#define LINE_LEAD_DERR_MAX          80.0f
+#define LINE_LEAD_WEIGHT            0.70f
+
+/* 直道加速：连续居中多少拍才允许加、每拍加多少、上限多少 */
+#define LINE_STRAIGHT_EPS_CM        0.35f
+#define LINE_STRAIGHT_STEER_CM      8.0f
+#define LINE_STRAIGHT_TICKS         5U
+#define LINE_STRAIGHT_BOOST_STEP    0.03f
+#define LINE_STRAIGHT_BOOST_MAX     0.25f
+#define LINE_BOOST_DECAY_STEP       0.06f
+
+/* 角点事件期间的速度上限系数（直角/锐角宁可慢一点） */
+#define LINE_CORNER_SLOW_MAX        0.72f
+
+/* 减速斜坡是加速斜坡的多少倍：进弯果断、出弯平缓 */
+#define LINE_DOWN_RAMP_MULT         2.0f
+
 /* 编译期默认增益 */
 /*
  * 外环比例增益，单位 cm/s 差速量 每 cm 误差。
@@ -670,6 +703,8 @@ typedef struct
     float   d_filter_state; /* 微分项滤波状态                                 */
     float   steer;          /* 最近一次差速量，cm/s                           */
     float   speed;          /* 最近一次的目标基础速度，cm/s                   */
+    uint8_t straight_ticks; /* 直道连续居中拍数（simple track 直道加速用）             */
+    float   speed_boost;    /* 直道加速系数，0 ~ LINE_STRAIGHT_BOOST_MAX              */
 
     /*
      * ---- 输出：左右轮的目标速度，cm/s ----
