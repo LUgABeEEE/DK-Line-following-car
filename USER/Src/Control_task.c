@@ -333,22 +333,31 @@ if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
                             ControlTask_RequestStop();
                             Led_Off(LED_1);
                         }
+                        else if ((key == KEY_3) && (s_key_press_eligible[key] != 0U))
+                        {
+                            /*
+                             * 长按 KEY3：本次跑【成功】-> [T] OK
+                             *
+                             * 为什么从"短按 KEY2"改到"长按 KEY3"：
+                             *   停车要长按 KEY2，按键那一刻会先被当成一次
+                             *   短按，容易误打一个成功标记；把成功标挪到
+                             *   长按 KEY3，和停车彻底分开，不会互相干扰。
+                             */
+                            (void)BleTask_SendTag(1U);
+                        }
                     }
                     else if (event == KEY_EVENT_RELEASE)
                     {
                         /*
-                         * 短按打标：循迹模式 + MODE 页 时
-                         *   KEY2 = 本次跑成功 -> [T] OK
-                         *   KEY1 = 本次跑失败 -> [T] FAIL
-                         *
-                         * 只有短按才打标：长按 KEY2 是停车，不能同时冒出
-                         * 一个假的 OK。
+                         * 短按 KEY1：本次跑【失败】-> [T] FAIL。
+                         * 长按 KEY3 的成功标在 LONG_PRESS 里已经发过，
+                         * 松手时不再重复。
                          */
                         if ((s_key_was_long[key] == 0U) &&
                             (s_key_press_eligible[key] != 0U) &&
-                            ((key == KEY_1) || (key == KEY_2)))
+                            (key == KEY_1))
                         {
-                            (void)BleTask_SendTag((key == KEY_2) ? 1U : 0U);
+                            (void)BleTask_SendTag(0U);
                         }
                     }
                 }
