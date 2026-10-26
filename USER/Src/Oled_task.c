@@ -424,6 +424,11 @@ uint8_t OledTask_IsModePage(void)
     return (s_param_index == TUNE_IDX_MODE) ? 1U : 0U;
 }
 
+void OledTask_SetModePage(void)
+{
+    s_param_index = TUNE_IDX_MODE;
+}
+
 float OledTask_GetParamValue(void)
 {
     return OledTask_ReadParam(s_param_index);
@@ -611,7 +616,7 @@ static void OledTask_DrawModePage(void)
             }
             else
             {
-                hint = "K1 FAIL  HOLD K3 OK";
+                hint = "K1 FAIL  K3H OK/MODE";
             }
         }
         break;
@@ -797,31 +802,23 @@ static void OledTask_Main(void *argument)
         /* ---- 2. KEY3：切换参数（每按一下前进一档，循环） ---- */
         if (k3n != 0U)
         {
-            if ((s_param_index == TUNE_IDX_MODE) &&
-                (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW))
-            {
-                /*
-                 * 循迹运行中、MODE 页：锁住 KEY3。
-                 *
-                 * KEY3 现在兼作"长按 = 本次跑成功"的标记键，
-                 * 如果按下时先切了页，长按就会在别的页面上打标，
-                 * 而且 MODE 页也会消失。所以运行中不响应切页，
-                 * 要换页面先停车。
-                 */
-            }
-            else
-            {
-                s_param_index = (uint8_t)((s_param_index + k3n) % TUNE_PARAM_COUNT);
+            s_param_index = (uint8_t)((s_param_index + k3n) % TUNE_PARAM_COUNT);
 
-                /*
-                 * 换了参数必须重新取基准值！
-                 *
-                 * old_value 是在切换之前读的，属于【旧参数】的值。
-                 * 如果同一轮里又按了 KEY1/KEY2，就会拿旧参数的值
-                 * 去加减新参数的步长，写进新参数——数值会跳到离谱的地方。
-                 */
-                old_value = OledTask_ReadParam(s_param_index);
-            }
+            /*
+             * 换了参数必须重新取基准值！
+             *
+             * old_value 是在切换之前读的，属于【旧参数】的值。
+             * 如果同一轮里又按了 KEY1/KEY2，就会拿旧参数的值
+             * 去加减新参数的步长，写进新参数——数值会跳到离谱的地方。
+             */
+            old_value = OledTask_ReadParam(s_param_index);
+
+            /*
+             * 注：KEY3 长按兼作"本次跑成功"的打标键。
+             * 这里不做锁页 —— 按下时按正常逻辑切页，
+             * 等 LONG_PRESS 事件到了，控制任务会打标并把页面
+             * 退回到 MODE 页（OledTask_SetModePage）。
+             */
         }
 
         /* ---- 3. KEY1/KEY2：按步长增减当前参数 ---- */

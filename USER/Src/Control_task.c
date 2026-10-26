@@ -369,7 +369,7 @@ if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
                             ControlTask_RequestStop();
                             Led_Off(LED_1);
                         }
-                        else if ((key == KEY_3) && (s_key_press_eligible[key] != 0U))
+                        else if (key == KEY_3)
                         {
                             /*
                              * 长按 KEY3：本次跑【成功】-> [T] OK
@@ -378,8 +378,16 @@ if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
                              *   停车要长按 KEY2，按键那一刻会先被当成一次
                              *   短按，容易误打一个成功标记；把成功标挪到
                              *   长按 KEY3，和停车彻底分开，不会互相干扰。
+                             *
+                             * 长按 KEY3 在循迹模式下随时可用（不要求当前在
+                             * MODE 页）：按下瞬间 KEY3 会先切走页面，
+                             * 打标后这里把它退回 MODE 页，方便看实时数据。
                              */
-                            (void)BleTask_SendTag(1U);
+                            if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
+                            {
+                                (void)BleTask_SendTag(1U);
+                                OledTask_SetModePage();
+                            }
                         }
                     }
                     else if (event == KEY_EVENT_RELEASE)

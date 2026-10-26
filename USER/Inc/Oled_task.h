@@ -105,6 +105,13 @@ float OledTask_GetParamValue(void);
  */
 uint8_t OledTask_IsModePage(void);
 
+/*
+ * 把页面强制切回 MODE 页。
+ * 长按 KEY3 打"成功"标时，按下瞬间已经切走了页面，
+ * 打完标由控制任务调用这里退回来。
+ */
+void OledTask_SetModePage(void);
+
 /* 诊断：任务栈的历史最小剩余量（单位：字）。任务未创建时返回 0。 */
 uint32_t OledTask_GetStackFreeWords(void);
 

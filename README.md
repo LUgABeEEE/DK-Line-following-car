@@ -254,8 +254,10 @@ python3 tools/serial_summary.py logs/serial_YYYYmmdd_HHMMSS.loop.csv
 > ⚠️ 为什么从"短按 KEY2"改成"长按 KEY3"：停车本身就要长按 KEY2，
 > 按下瞬间和一次短按在按键层是同一个事件，很容易在停车时误打一个 `[T] OK`。
 > 成功标挪到长按 KEY3（约 1 s）后，和停车完全解耦。
-> 另外循迹运行中、MODE 页会锁住 KEY3 切页（否则按住 KEY3 会先切页再打标），
-> 要换页面先停车。
+>
+> 长按 KEY3 在循迹模式下**随时可用**：按下瞬间 KEY3 会先按正常逻辑切页，
+> 长按触发时打标，然后由控制任务把页面退回 MODE 页（`OledTask_SetModePage`），
+> 所以不会因为打标而停在别的页面。短按 KEY3 仍然是正常切页。
 
 设计要点：
 
