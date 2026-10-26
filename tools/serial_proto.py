@@ -10,6 +10,7 @@
     [G] A 2950 2960 ...              （8 路模拟值）
     [G] T 3000 3000 ...              （8 路阈值）
     [S] ln4 rt0 cl1 sp4 lv-1.4       （场景判据原始特征，2 秒一次）
+    [T] OK #3 t123456                （跑圈结果标记：KEY2 成功 / KEY1 失败）
 
 所有浮点都是 BleTask_Fmt1 输出的 "整数.一位小数"，负数形如 -1.2，
 所以正则里统一用 -?\\d+\\.\\d。
@@ -49,6 +50,11 @@ _AB_RE = re.compile(
     r"i(?P<integral>-?\d+\.\d)\s+"
     r"c(?P<count>\d+)\s+"
     r"d(?P<distance>-?\d+\.\d)"
+)
+
+# [T] 跑圈结果标记（s 版起）：KEY2 短按=成功，KEY1 短按=失败
+_T_RE = re.compile(
+    r"^\[T\]\s+(?P<status>OK|FAIL)\s+#(?P<seq>\d+)\s+t(?P<tick>\d+)"
 )
 
 # [G] 8 路模拟值 / 阈值
@@ -105,6 +111,15 @@ def parse_line(line: str) -> Optional[Dict[str, Any]]:
             "kind": "G",
             "gray_type": m.group("kind"),
             "values": [int(v) for v in m.group("vals").split()],
+        }
+
+    m = _T_RE.match(line)
+    if m:
+        return {
+            "kind": "T",
+            "ok": 1 if m.group("status") == "OK" else 0,
+            "seq": int(m.group("seq")),
+            "tick": int(m.group("tick")),
         }
 
     m = _S_RE.match(line)

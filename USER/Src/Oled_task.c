@@ -25,6 +25,7 @@
 #include "Gray.h"
 #include "LinePD.h"
 #include "Control_task.h"
+#include "Ble_task.h"       /* BleTask_GetTagCount()：显示已打标次数 */
 #include <stdio.h>
 #include <string.h>
 
@@ -396,6 +397,11 @@ uint8_t OledTask_GetParamIndex(void)
     return s_param_index;
 }
 
+uint8_t OledTask_IsModePage(void)
+{
+    return (s_param_index == TUNE_IDX_MODE) ? 1U : 0U;
+}
+
 float OledTask_GetParamValue(void)
 {
     return OledTask_ReadParam(s_param_index);
@@ -553,6 +559,7 @@ static void OledTask_DrawSensorPage(void)
 static void OledTask_DrawModePage(void)
 {
     char        line[28];
+    char        hint_buf[28];
     const char *mode_str;
     const char *hint;
 
@@ -565,7 +572,26 @@ static void OledTask_DrawModePage(void)
 
     case CTRL_MODE_LINE_FOLLOW:
         mode_str = "LINE FOLLOW";
-        hint     = "outer+inner loop";
+        /*
+         * 循迹运行中模式锁定（见 OledTask_Main 的 KEY1/KEY2 分支）：
+         *   KEY1 短按 = 本次跑失败   -> 串口 [T] FAIL
+         *   KEY2 短按 = 本次跑成功   -> 串口 [T] OK
+         *   KEY2 长按 = 停车（Control_task 处理）
+         */
+        {
+            uint16_t tag_n = BleTask_GetTagCount();
+
+            if (tag_n > 0U)
+            {
+                (void)snprintf(hint_buf, sizeof(hint_buf),
+                               "K1 FAIL K2 OK #%u", (unsigned int)tag_n);
+                hint = hint_buf;
+            }
+            else
+            {
+                hint = "K1 FAIL K2 OK";
+            }
+        }
         break;
 
     case CTRL_MODE_STOP:
@@ -764,10 +790,27 @@ static void OledTask_Main(void *argument)
         /* ---- 3. KEY1/KEY2：按步长增减当前参数 ---- */
         if ((k1n != 0U) || (k2n != 0U))
         {
-            float step = s_params[s_param_index].step;
-            float delta = (float)k2n * step - (float)k1n * step;
+            if ((s_param_index == TUNE_IDX_MODE) &&
+                (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW))
+            {
+                /*
+                 * 循迹运行中：模式锁定。
+                 *
+                 * 以前在 MODE 页按 KEY1/KEY2 会直接把模式切走，
+                 * 车还在跑的时候一不小心就切到 SPD/STOP，很危险。
+                 * 现在这两个键改为"跑圈结果打标"：
+                 *   KEY1 = 失败、KEY2 = 成功，由控制任务在【松手】时
+                 *   判定为短按后调用 BleTask_SendTag()。
+                 * 要停车请长按 KEY2（走 ControlTask_RequestStop）。
+                 */
+            }
+            else
+            {
+                float step = s_params[s_param_index].step;
+                float delta = (float)k2n * step - (float)k1n * step;
 
-            OledTask_WriteParam(s_param_index, old_value + delta);
+                OledTask_WriteParam(s_param_index, old_value + delta);
+            }
         }
 
         /*

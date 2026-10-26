@@ -86,4 +86,22 @@ uint8_t BleTask_Init(void);
 /* 诊断：本任务栈的历史最小剩余量（单位：字）。任务未创建时返回 0。 */
 uint32_t BleTask_GetStackFreeWords(void);
 
+/*
+ * 跑圈结果打标（由控制任务在"循迹模式 + MODE 页"下调用）。
+ *
+ *   ok = 1 -> 串口打印 [T] OK   #n t...
+ *   ok = 0 -> 串口打印 [T] FAIL #n t...
+ *
+ * 为什么不在调用处直接发串口：
+ *   调用方是控制任务（优先级 3），串口是蓝牙任务的。直接写会打断
+ *   蓝牙任务正在发送的一行（半截 [L] 行就是这么来的），所以这里只
+ *   往队列里放一个字节，由蓝牙任务统一打印。
+ *
+ * 返回 1 = 已排队；0 = 队列未创建或已满。
+ */
+uint8_t BleTask_SendTag(uint8_t ok);
+
+/* 已发送的标记个数（从上次上电算起） */
+uint16_t BleTask_GetTagCount(void);
+
 #endif //LINEFOLLOWING_CAR_BLE_TASK_H

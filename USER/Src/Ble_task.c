@@ -39,7 +39,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "r"
+#define BLE_BUILD_TAG   "s"
 
 /*
  * UART 发送超时，单位 ms。
@@ -56,6 +56,8 @@
  *   也不会因为超时把一帧数据切掉半截。
  */
 #define BLE_TX_TIMEOUT_MS   250U
+#include "queue.h"          /* 跑圈结果标记队列 */
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -65,6 +67,16 @@ extern size_t xPortGetFreeHeapSize(void);
 
 /* 运行期资源诊断周期：每 10s 打一行 [M]，看堆和任务栈的余量 */
 #define BLE_DIAG_PERIOD_MS      10000U
+
+/*
+ * 跑圈结果标记队列。
+ *
+ * 控制任务只负责"按了哪个键"，把 1/0 塞进来；串口的实际打印
+ * 永远发生在蓝牙任务里。长度 8 足够（人不会在 25ms 内连按 8 次）。
+ */
+#define BLE_TAG_QUEUE_LEN       8U
+static QueueHandle_t s_tag_queue = NULL;
+static uint16_t      s_tag_seq   = 0U;
 
 /* 串口句柄定义在 main.c 中 */
 extern UART_HandleTypeDef huart2;
@@ -622,7 +634,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-25r (built " __DATE__ " " __TIME__ ")\r\n");
+    BleTask_Print("[VER] line-follower 2025-10-26s (built " __DATE__ " " __TIME__ ")\r\n");
     BleTask_Print("[BleTask] X=stop I=scan I2C\r\n");
 
     /* 同步一次连接状态，避免把"上电时已连接"误报成一次新连接 */
@@ -668,6 +680,26 @@ static void BleTask_Main(void *argument)
                     /* 其它字符忽略（包括 App 自动补的 \r \n） */
                     break;
                 }
+            }
+        }
+
+        /*
+         * ---- 跑圈结果标记 ----
+         *
+         * [T] OK #3 t123456 / [T] FAIL #4 t130000
+         * 分析日志时按 [T] 行切段，就能知道哪一段是成功/失败，
+         * 不用再靠"看起来像成功"猜。
+         */
+        {
+            uint8_t tag;
+
+            while (xQueueReceive(s_tag_queue, &tag, 0U) == pdTRUE)
+            {
+                s_tag_seq++;
+                BleTask_Print("[T] %s #%u t%lu\r\n",
+                              (tag != 0U) ? "OK" : "FAIL",
+                              (unsigned int)s_tag_seq,
+                              (unsigned long)HAL_GetTick());
             }
         }
 
@@ -751,7 +783,7 @@ static void BleTask_Main(void *argument)
                      * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
                      * 放在这里就能保证每次连接都能确认。
                      */
-                    BleTask_Print("[VER] line-follower 2025-10-25r (built "
+                    BleTask_Print("[VER] line-follower 2025-10-26s (built "
                                   __DATE__ " " __TIME__ ")\r\n");
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");
                 }
@@ -782,6 +814,16 @@ uint8_t BleTask_Init(void)
         return 1U;      /* 已经创建过，避免重复创建 */
     }
 
+    /* 跑圈结果标记队列（必须在任务启动前建好） */
+    if (s_tag_queue == NULL)
+    {
+        s_tag_queue = xQueueCreate(BLE_TAG_QUEUE_LEN, sizeof(uint8_t));
+        if (s_tag_queue == NULL)
+        {
+            return 0U;
+        }
+    }
+
     ret = xTaskCreate(BleTask_Main,
                       "BleTask",
                       BLE_TASK_STACK_WORDS,
@@ -806,6 +848,23 @@ uint32_t BleTask_GetStackFreeWords(void)
         return 0U;
     }
     return (uint32_t)uxTaskGetStackHighWaterMark(s_task_handle);
+}
+
+uint8_t BleTask_SendTag(uint8_t ok)
+{
+    uint8_t item = (ok != 0U) ? 1U : 0U;
+
+    if (s_tag_queue == NULL)
+    {
+        return 0U;
+    }
+
+    return (xQueueSend(s_tag_queue, &item, 0U) == pdTRUE) ? 1U : 0U;
+}
+
+uint16_t BleTask_GetTagCount(void)
+{
+    return s_tag_seq;
 }
 
 //

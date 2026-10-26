@@ -24,6 +24,7 @@
 #include "Ble.h"
 #include "Oled.h"
 #include "Oled_task.h"
+#include "Ble_task.h"       /* BleTask_SendTag()：跑圈结果打标 */
 
 extern Gray_Sensor_t g_gray;
 extern Line_PD_t     g_line_pd;
@@ -53,6 +54,27 @@ static float s_ramped_target = 0.0f;
  * 进入停车模式时需要清一次 PID 状态，之后就不必每拍都清。
  */
 static uint8_t s_last_mode = CTRL_MODE_SPEED_TEST;
+
+/*
+ * 按键短按/长按判定。
+ *
+ *   PRESS       -> 清长按标志
+ *   LONG_PRESS  -> 置位（KEY2 的长按仍然是急停）
+ *   RELEASE     -> 没置位就是短按
+ *
+ * 循迹模式 + MODE 页下，短按 KEY2 = 成功标记、短按 KEY1 = 失败标记。
+ * 放在松手时判定，是为了避免"长按 KEY2 停车"同时打出一个假的成功标记。
+ */
+static uint8_t s_key_was_long[3] = {0U, 0U, 0U};
+
+/*
+ * 按下瞬间是否"已经在循迹模式 + MODE 页"。
+ *
+ * 必须记在按下时刻：从 STOP/SPD 切到 LINE 的那一次短按 KEY2，
+ * 松手时模式已经是 LINE 了，如果不看按下时的状态，
+ * 就会在刚进入循迹模式时凭空打出一个 [T] OK。
+ */
+static uint8_t s_key_press_eligible[3] = {0U, 0U, 0U};
 
 /* ------------------------------------------------------------------------- */
 /* 任务主体                                                                    */
@@ -267,8 +289,18 @@ if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
 
                 while (Key_GetEvent(&key, &event) != 0U)
                 {
+                    if (key > KEY_3)
+                    {
+                        continue;
+                    }
+
                     if (event == KEY_EVENT_PRESS)
                     {
+                        s_key_was_long[key]      = 0U;
+                        s_key_press_eligible[key] =
+                            ((g_ctrl_mode == CTRL_MODE_LINE_FOLLOW) &&
+                             (OledTask_IsModePage() != 0U)) ? 1U : 0U;
+
                         if ((key == KEY_1) || (key == KEY_2) || (key == KEY_3))
                         {
                             /*
@@ -286,16 +318,38 @@ if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
                             (void)OledTask_NotifyKeyPress(key);
                         }
                     }
-                    else if ((key == KEY_2) && (event == KEY_EVENT_LONG_PRESS))
+                    else if (event == KEY_EVENT_LONG_PRESS)
+                    {
+                        s_key_was_long[key] = 1U;
+
+                        if (key == KEY_2)
+                        {
+                            /*
+                             * 长按 KEY2：急停（硬制动）。
+                             *
+                             * 和蓝牙 X 命令走同一个函数，保证两条路径行为一致：
+                             *   切停车模式 + 清 PID 积分 + 立即制动 + 停循迹
+                             */
+                            ControlTask_RequestStop();
+                            Led_Off(LED_1);
+                        }
+                    }
+                    else if (event == KEY_EVENT_RELEASE)
                     {
                         /*
-                         * 长按 KEY2：急停（硬制动）。
+                         * 短按打标：循迹模式 + MODE 页 时
+                         *   KEY2 = 本次跑成功 -> [T] OK
+                         *   KEY1 = 本次跑失败 -> [T] FAIL
                          *
-                         * 和蓝牙 X 命令走同一个函数，保证两条路径行为一致：
-                         *   切停车模式 + 清 PID 积分 + 立即制动 + 停循迹
+                         * 只有短按才打标：长按 KEY2 是停车，不能同时冒出
+                         * 一个假的 OK。
                          */
-                        ControlTask_RequestStop();
-                        Led_Off(LED_1);
+                        if ((s_key_was_long[key] == 0U) &&
+                            (s_key_press_eligible[key] != 0U) &&
+                            ((key == KEY_1) || (key == KEY_2)))
+                        {
+                            (void)BleTask_SendTag((key == KEY_2) ? 1U : 0U);
+                        }
                     }
                 }
             }

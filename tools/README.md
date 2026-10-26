@@ -154,3 +154,17 @@ python3 tools/serial_summary.py logs/serial_20261025_165000.loop.csv
 | 数据乱码 / 半行 | 波特率不对（USART2 是 9600）；或 EN 被拉高进了 AT 模式 |
 | 只收到 `[VER]` 就没了 | 蓝牙连接建立了但车没进入循迹模式，`[L]` 行只在 LINE/SPD 模式输出 |
 | CSV 里没有数据，log 有 | 协议格式对不上：先跑 `python3 tools/serial_proto.py` 自测，再对照车端 `Ble_task.c` 的格式字符串 |
+
+
+## tag_report.py —— 按跑圈标记切分日志
+
+车端（构建 s 起）在循迹模式 + MODE 页下：短按 KEY2 打 `[T] OK`、短按 KEY1 打 `[T] FAIL`。
+约定标记打在"这段跑完之后"，所以一段 = 上一个标记到本标记之间。
+
+```bash
+python3 tools/tag_report.py logs/serial_20261026_*.log
+python3 tools/tag_report.py logs/xxx.log --csv logs/tags.csv
+```
+
+每段输出：时长、`[L]` 样本数、模式分布、场景分布、角点事件数、丢线样本数、
+`|e|` 中位数、里程增量，并用 OK/FAIL 标注。

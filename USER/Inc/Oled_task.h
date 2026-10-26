@@ -99,6 +99,12 @@ uint8_t OledTask_GetParamIndex(void);
 /* 查询当前选中参数的值 */
 float OledTask_GetParamValue(void);
 
+/*
+ * 当前是否停在 MODE 页（s_param_index == TUNE_IDX_MODE）。
+ * 控制任务用它判断"短按 KEY1/KEY2 要不要当成跑圈结果打标"。
+ */
+uint8_t OledTask_IsModePage(void);
+
 /* 诊断：任务栈的历史最小剩余量（单位：字）。任务未创建时返回 0。 */
 uint32_t OledTask_GetStackFreeWords(void);
 
