@@ -243,6 +243,28 @@
 /* 减速斜坡是加速斜坡的多少倍：进弯果断、出弯平缓 */
 #define LINE_DOWN_RAMP_MULT         2.0f
 
+/*
+ * ---- 比赛自动停车（规则：一圈后停在启停线，测试点偏差 ≤2cm 拿满 P）----
+ *
+ * 几何关系（实测）：
+ *   灰度条中心 --17cm--> 后轮轴中点（= 规则里指定的"测试点"）
+ *   起跑时把后轮轴中点对准起跑线，则：
+ *     车头灰度条在测试点前方 17cm；
+ *     跑完一圈时，灰度条先压到启停线（离测试点还差 17cm），
+ *     再直行 17cm，测试点正好落在启停线中轴线上。
+ *
+ * 启停线是 5cm 长、1.8cm 宽的横线：车头 8 路会瞬间全黑 1~3 拍，
+ * 和"角点全黑"的区别是它很短（角点会持续很多拍）——用脉冲宽度区分。
+ */
+#define LINE_RACE_STOP_OFFSET_CM    17.0f   /* 灰度条中心 -> 测试点 */
+#define LINE_RACE_ARM_FRAC          0.50f   /* 跑过半圈才允许识别启停线 */
+#define LINE_RACE_DETECT_CHANNELS   6U      /* 8 路里至少几路全黑 */
+#define LINE_RACE_PULSE_MAX         3U      /* 全黑持续超过这么多拍 = 角点，不算 */
+#define LINE_RACE_DETECT_ERR_CM     1.2f    /* 识别时横向误差必须小 */
+#define LINE_RACE_APPROACH_CMS      12.0f   /* 识别后的接近速度 */
+#define LINE_RACE_BRAKE_MARGIN_CM   1.0f    /* 到点前 1cm 开始硬刹 */
+#define LINE_RACE_FALLBACK_CM       2.0f    /* 里程兜底：差 2cm 还没识别到就按里程停 */
+
 /* 编译期默认增益 */
 /*
  * 外环比例增益，单位 cm/s 差速量 每 cm 误差。
@@ -706,6 +728,13 @@ typedef struct
     uint8_t straight_ticks; /* 直道连续居中拍数（simple track 直道加速用）             */
     float   speed_boost;    /* 直道加速系数，0 ~ LINE_STRAIGHT_BOOST_MAX              */
 
+    /* ---- 比赛自动停车 ---- */
+    uint8_t race_phase;     /* 0=等待 1=巡航(已武装) 2=接近 3=已到位                  */
+    uint8_t race_pulse;     /* 连续全黑拍数，用来区分"启停线脉冲"和"角点全黑"          */
+    float   race_lap_cm;    /* 一圈周长 cm，0 = 关闭自动停车                          */
+    float   race_start_cm;  /* 进入循迹时的里程基准                                   */
+    float   race_detect_cm; /* 识别到启停线时的里程                                   */
+
     /*
      * ---- 输出：左右轮的目标速度，cm/s ----
      *
@@ -798,6 +827,20 @@ void LinePD_Reset(Line_PD_t *pd);
 
 /* 运行时修改增益。会自动复位，避免旧状态污染新参数。 */
 void LinePD_SetGains(Line_PD_t *pd, float kp, float kd, float base_speed);
+
+/*
+ * 比赛自动停车。
+ *
+ *   LinePD_RaceStart(pd, lap_cm)  进入循迹时调用；lap_cm=0 关闭自动停车。
+ *                                 内部记录当前里程作为基准。
+ *   LinePD_RaceCancel(pd)         离开循迹时调用，取消本次比赛。
+ *   LinePD_RaceDone(pd)           返回 1 表示已经到位，调用方应停车。
+ *   LinePD_RacePhase(pd)          当前阶段（调试用）。
+ */
+void    LinePD_RaceStart(Line_PD_t *pd, float lap_cm);
+void    LinePD_RaceCancel(Line_PD_t *pd);
+uint8_t LinePD_RaceDone(const Line_PD_t *pd);
+uint8_t LinePD_RacePhase(const Line_PD_t *pd);
 
 /*
  * 核心接口：读一次灰度传感器，做 PD 运算，并把左右轮目标速度写进内环。

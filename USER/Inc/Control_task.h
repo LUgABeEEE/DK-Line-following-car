@@ -102,6 +102,12 @@ extern volatile float g_speed_test_target;
 
 /* 便捷接口：请求停车 / 请求进入速度环测试 */
 void ControlTask_RequestStop(void);
+
+/*
+ * 比赛自动停车用的一圈周长（cm）。0 = 关闭自动停车。
+ * 由 OLED 的 LAP 参数读写；默认 514cm（2026 H 题椭圆地图实测）。
+ */
+extern volatile float g_race_lap_cm;
 void ControlTask_RequestSpeedTest(float target_cms);
 
 /* ------------------------------------------------------------------------- */

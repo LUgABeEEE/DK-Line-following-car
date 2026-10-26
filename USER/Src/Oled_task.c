@@ -77,7 +77,8 @@ typedef struct
 #define TUNE_IDX_LKP        8U
 #define TUNE_IDX_LKD        9U
 #define TUNE_IDX_LBAS       10U
-#define TUNE_PARAM_COUNT    11U
+#define TUNE_IDX_LAP        11U     /* 比赛自动停车：一圈周长 cm */
+#define TUNE_PARAM_COUNT    12U
 
 static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
 {
@@ -136,6 +137,12 @@ static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
     { "LKP",     0.50f,   0.00f, 30.00f },
     { "LKD",     0.10f,   0.00f, 20.00f },
     { "LBAS",    1.00f,   0.00f, 50.00f },
+    /*
+     * LAP: 比赛自动停车用的一圈周长，单位 cm；0 = 关闭自动停车。
+     * 默认 514cm（2026 H 题椭圆地图实测周长）。
+     * 步长 10cm：换图时调个十几次，或者先在 MODE 页把它调好再比赛。
+     */
+    { "LAP",    10.00f,   0.00f, 3000.00f },
 };
 
 /* ------------------------------------------------------------------------- */
@@ -209,6 +216,11 @@ static float OledTask_ReadParam(uint8_t idx)
     if (idx == TUNE_IDX_MODE)
     {
         return (float)g_ctrl_mode;
+    }
+
+    if (idx == TUNE_IDX_LAP)
+    {
+        return g_race_lap_cm;
     }
 
     /* ---- 外环参数直接读写 g_line_pd ---- */
@@ -305,6 +317,16 @@ static void OledTask_WriteParam(uint8_t idx, float value)
          */
         g_line_pd.base_speed  = value;
         g_speed_test_target   = value;
+        return;
+    }
+
+    if (idx == TUNE_IDX_LAP)
+    {
+        /*
+         * 自动停车的一圈周长（cm）。0 = 关闭。
+         * 只在停车状态下改，运行中改不会生效（RaceStart 只在进入 LINE 时读一次）。
+         */
+        g_race_lap_cm = value;
         return;
     }
 

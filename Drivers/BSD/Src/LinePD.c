@@ -19,6 +19,7 @@
 //
 
 #include "LinePD.h"
+#include "Encoder.h"        /* 自动停车要用累计里程 */
 #include <stdio.h>
 #include <string.h>
 
@@ -141,6 +142,11 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->speed          = 0.0f;
     pd->straight_ticks = 0U;
     pd->speed_boost    = 0.0f;
+    pd->race_phase     = 0U;
+    pd->race_pulse     = 0U;
+    pd->race_lap_cm    = 0.0f;
+    pd->race_start_cm  = 0.0f;
+    pd->race_detect_cm = 0.0f;
     pd->lost_count     = 0U;
     pd->line_lost      = 0U;
     pd->first_run      = 1U;
@@ -201,6 +207,13 @@ void LinePD_Stop(Line_PD_t *pd)
 /* 核心                                                                        */
 /* ------------------------------------------------------------------------- */
 
+/* 两轮累计里程的平均值，cm（编码器量的是轮子转过的距离） */
+static float LinePD_RaceTravel(const Line_PD_t *pd)
+{
+    (void)pd;
+    return (Encoder_GetDistance(ENCODER_A) + Encoder_GetDistance(ENCODER_B)) * 0.5f;
+}
+
 uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 {
     float   error;
@@ -257,6 +270,78 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                            * 57.2957795f;      /* rad -> deg */
         }
         pd->last_yaw_tick = now_tick;
+    }
+
+    /* ---------- 1c. 比赛自动停车：启停线识别 + 里程 ---------- */
+    /*
+     * 阶段机：
+     *   0 等待   —— 还没跑过半圈（防止起跑线/杂线误触发）
+     *   1 巡航   —— 已武装，只等启停线的"短全黑脉冲"
+     *   2 接近   —— 已识别，按 12cm/s 直行到"灰度条到测试点"的距离
+     *   3 到位   —— 通知 ControlTask 硬刹停车
+     */
+    if (pd->race_lap_cm > 0.0f)
+    {
+        float traveled = LinePD_RaceTravel(pd) - pd->race_start_cm;
+
+        if (pd->race_phase == 0U)
+        {
+            if (traveled >= (pd->race_lap_cm * LINE_RACE_ARM_FRAC))
+            {
+                pd->race_phase = 1U;
+            }
+        }
+        else if (pd->race_phase == 1U)
+        {
+            uint8_t all_black = (gray->active_count >= LINE_RACE_DETECT_CHANNELS) ? 1U : 0U;
+
+            if (all_black != 0U)
+            {
+                if (pd->race_pulse < 0xFFU)
+                {
+                    pd->race_pulse++;
+                }
+            }
+            else if (pd->race_pulse > 0U)
+            {
+                /*
+                 * 全黑结束：短脉冲（1~3 拍）才是启停线；
+                 * 角点/宽黑带会持续很多拍，靠这个把两者分开。
+                 */
+                if ((pd->race_pulse <= LINE_RACE_PULSE_MAX) &&
+                    (gray->position_cm > -LINE_RACE_DETECT_ERR_CM) &&
+                    (gray->position_cm <  LINE_RACE_DETECT_ERR_CM))
+                {
+                    pd->race_phase     = 2U;
+                    pd->race_detect_cm = traveled;
+                }
+                pd->race_pulse = 0U;
+            }
+            else
+            {
+                /* 没看到全黑，保持巡航 */
+            }
+
+            /* 兜底：识别失败时按里程到位 */
+            if ((pd->race_phase == 1U) &&
+                (traveled >= (pd->race_lap_cm - LINE_RACE_FALLBACK_CM)))
+            {
+                pd->race_phase = 3U;
+            }
+        }
+        else if (pd->race_phase == 2U)
+        {
+            float approach = traveled - pd->race_detect_cm;
+
+            if (approach >= (LINE_RACE_STOP_OFFSET_CM - LINE_RACE_BRAKE_MARGIN_CM))
+            {
+                pd->race_phase = 3U;
+            }
+        }
+        else
+        {
+            /* 阶段 3：已经到位，等 ControlTask 停车 */
+        }
     }
 
     /* ---------- 2. 角点事件状态更新（SIDE / FORK 统一处理） ---------- */
@@ -678,6 +763,12 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             float dt_sec  = (float)LINE_PD_PERIOD_MS / 1000.0f;
             float step_up = LINE_SPEED_RAMP_CMS_PER_SEC * dt_sec;
             float step_dn = step_up * LINE_DOWN_RAMP_MULT;
+
+            /* 自动停车接近段：限速，17cm 内要停得准 */
+            if ((pd->race_phase == 2U) && (target_speed > LINE_RACE_APPROACH_CMS))
+            {
+                target_speed = LINE_RACE_APPROACH_CMS;
+            }
 
             if (target_speed > pd->speed_limit)
             {
@@ -1212,3 +1303,49 @@ void LinePD_TestSequence(Line_PD_t *pd, Gray_Sensor_t *gray,
 //
 // Created by JiangyaF on 2026/10/11.
 //
+
+
+/* ------------------------------------------------------------------------- */
+/* 比赛自动停车接口                                                            */
+/* ------------------------------------------------------------------------- */
+
+void LinePD_RaceStart(Line_PD_t *pd, float lap_cm)
+{
+    if (pd == NULL)
+    {
+        return;
+    }
+
+    pd->race_lap_cm    = (lap_cm > 0.0f) ? lap_cm : 0.0f;
+    pd->race_start_cm  = LinePD_RaceTravel(pd);
+    pd->race_detect_cm = 0.0f;
+    pd->race_pulse     = 0U;
+    pd->race_phase     = 0U;
+}
+
+void LinePD_RaceCancel(Line_PD_t *pd)
+{
+    if (pd == NULL)
+    {
+        return;
+    }
+
+    pd->race_lap_cm    = 0.0f;
+    pd->race_phase     = 0U;
+    pd->race_pulse     = 0U;
+    pd->race_detect_cm = 0.0f;
+}
+
+uint8_t LinePD_RaceDone(const Line_PD_t *pd)
+{
+    if (pd == NULL)
+    {
+        return 0U;
+    }
+    return ((pd->race_lap_cm > 0.0f) && (pd->race_phase == 3U)) ? 1U : 0U;
+}
+
+uint8_t LinePD_RacePhase(const Line_PD_t *pd)
+{
+    return (pd == NULL) ? 0U : pd->race_phase;
+}

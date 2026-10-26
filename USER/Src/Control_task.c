@@ -43,6 +43,9 @@ static TaskHandle_t s_task_handle = NULL;
 volatile uint8_t g_ctrl_mode       = CTRL_MODE_SPEED_TEST;
 volatile float   g_speed_test_target = 0.0f;
 
+/* 比赛自动停车的一圈周长，cm；0 = 关闭（练习用） */
+volatile float   g_race_lap_cm     = 514.0f;
+
 /*
  * 斜坡化之后的目标速度（内部状态）。
  * 实际下发给内环的是这个值，而不是 g_speed_test_target 的阶跃值。
@@ -54,6 +57,12 @@ static float s_ramped_target = 0.0f;
  * 进入停车模式时需要清一次 PID 状态，之后就不必每拍都清。
  */
 static uint8_t s_last_mode = CTRL_MODE_SPEED_TEST;
+
+/* 自动停车只打印一次 */
+static uint8_t s_race_announced = 0U;
+
+/* 串口句柄（自动停车提示用，定义在 main.c） */
+extern UART_HandleTypeDef huart2;
 
 /*
  * 按键短按/长按判定。
@@ -124,6 +133,14 @@ static void ControlTask_Main(void *argument)
                  * 下一拍走"首拍不做微分"的保护分支。
                  */
                 LinePD_Reset(&g_line_pd);
+
+                /* 启动比赛自动停车（g_race_lap_cm=0 时等于关闭） */
+                LinePD_RaceStart(&g_line_pd, g_race_lap_cm);
+                s_race_announced = 0U;
+            }
+            else
+            {
+                LinePD_RaceCancel(&g_line_pd);
             }
         }
 
@@ -165,6 +182,25 @@ static void ControlTask_Main(void *argument)
              */
             (void)Speed_PID_Update(MOTOR_A, g_line_pd.left_target);
             (void)Speed_PID_Update(MOTOR_B, g_line_pd.right_target);
+
+            /*
+             * 自动停车：外环判定"测试点已到启停线"后，
+             * 走和急停完全相同的路径（切 STOP + 清积分 + 硬制动），
+             * 保证停车行为和长按 KEY2 / 蓝牙 X 一致。
+             */
+            if (LinePD_RaceDone(&g_line_pd) != 0U)
+            {
+                ControlTask_RequestStop();
+                Motor_Brake();
+
+                if (s_race_announced == 0U)
+                {
+                    s_race_announced = 1U;
+                    (void)HAL_UART_Transmit(&huart2,
+                                            (uint8_t *)"[RACE] stop\r\n",
+                                            13U, 100U);
+                }
+            }
             break;
 
         case CTRL_MODE_SPEED_TEST:
