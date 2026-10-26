@@ -529,13 +529,37 @@
  *   如果反复出现"y 到了 115 还找不到线" -> 加到 125/130；
  *   如果"转过头、反向扫很久" -> 减到 110。
  */
-#define LINE_ACUTE_TURN_DEG          115.0f
+/*
+ * 注意：simple 分支把锐角目标角从 115° 降到 95°。
+ * 本分支面向的是"只有弧线/直角"的简单赛道（拱形、方形、椭圆），
+ * 这类赛道的角点最多 90°，按 115° 转会转过头、把出弯腿甩到车后。
+ * V 形锐角（120~140°）请用 main 分支（那里仍是 115°）。
+ */
+#define LINE_ACUTE_TURN_DEG          95.0f
 
 /*
  * 承诺转向的兜底超时（ms）。
  * 编码器打滑、轮子被卡住时 yaw 不会增长，靠这个超时退出，防止原地转圈。
  */
 #define LINE_ACUTE_COMMIT_TIMEOUT_MS 1500U
+
+/*
+ * ---- 直角弯（90°）----
+ *
+ * 赛道里有 90° 直角（方形地图、拱形赛道的两个底角）时，需要的转角
+ * 比 V 形锐角小，只需要 90° 左右。
+ *
+ * 判定依据：
+ *   锐角（V 形）—— 事件里出现过 FORK（两条腿分开）或 ALL（整条全黑），
+ *                  按 LINE_ACUTE_TURN_DEG 转；
+ *   直角         —— 事件是纯 SIDE（线从一侧滑出），且丢线时横向误差
+ *                  已经很大（>= LINE_RIGHT_ANGLE_MIN_ERR_CM），
+ *                  按 LINE_RIGHT_ANGLE_TURN_DEG 转。
+ *
+ * 直角不要转太大：转多了出弯腿会落到车身后方，只能靠反向搜索找回来。
+ */
+#define LINE_RIGHT_ANGLE_TURN_DEG    90.0f
+#define LINE_RIGHT_ANGLE_MIN_ERR_CM  1.2f   /* 丢线时误差至少这么大才算直角 */
 
 /*
  * 角点期间遇到 ALL（整片全黑）时，改用锁存方向满舵。
@@ -729,6 +753,7 @@ typedef struct
     float   speed_boost;    /* 直道加速系数，0 ~ LINE_STRAIGHT_BOOST_MAX              */
 
     /* ---- 比赛自动停车 ---- */
+    float   commit_target_deg; /* 本次承诺转向的目标角度（锐角/直角不同）   */
     uint8_t race_phase;     /* 0=等待 1=巡航(已武装) 2=接近 3=已到位                  */
     uint8_t race_pulse;     /* 连续全黑拍数，用来区分"启停线脉冲"和"角点全黑"          */
     float   race_lap_cm;    /* 一圈周长 cm，0 = 关闭自动停车                          */

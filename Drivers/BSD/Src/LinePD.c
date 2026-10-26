@@ -142,6 +142,7 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->speed          = 0.0f;
     pd->straight_ticks = 0U;
     pd->speed_boost    = 0.0f;
+    pd->commit_target_deg = 0.0f;
     pd->race_phase     = 0U;
     pd->race_pulse     = 0U;
     pd->race_lap_cm    = 0.0f;
@@ -587,7 +588,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         /* 已经转过的角度（朝锁存方向为正） */
         turned_deg = (pd->yaw_deg - pd->corner_yaw0) * (float)pd->commit_dir;
 
-        if ((turned_deg >= LINE_ACUTE_TURN_DEG) || (pd->commit_ms == 0U))
+        if ((turned_deg >= pd->commit_target_deg) || (pd->commit_ms == 0U))
         {
             /*
              * 转够了（或兜底超时）：结束承诺转向，把搜索计时清零，
@@ -862,11 +863,22 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                  * 把回来那条腿扫过去，避免刚丢线就把它当成找回来了。
                  * commit_done 保证一次搜索里只做一次承诺转向。
                  */
-                if ((pd->corner_acute != 0U) && (pd->commit_done == 0U))
+                if ((pd->commit_done == 0U) &&
+                    ((pd->corner_acute != 0U) ||
+                     ((pd->corner_active != 0U) &&
+                     (abs_last >= LINE_RIGHT_ANGLE_MIN_ERR_CM))))
                 {
                     pd->commit_active = 1U;
                     pd->commit_dir    = pd->corner_dir;   /* 固定方向，防止中途被清 */
-                    pd->commit_ms     = LINE_ACUTE_COMMIT_TIMEOUT_MS;
+
+                    /*
+                     * 锐角事件（FORK/ALL）：按 V 形角度转；
+                     * 纯 SIDE 且误差已经拉大：按直角转。
+                     */
+                    pd->commit_target_deg = (pd->corner_acute != 0U)
+                                            ? LINE_ACUTE_TURN_DEG
+                                            : LINE_RIGHT_ANGLE_TURN_DEG;
+                    pd->commit_ms = LINE_ACUTE_COMMIT_TIMEOUT_MS;
                 }
             }
             else if (abs_last >= LINE_SEARCH_MIN_INFO_CM)
