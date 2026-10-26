@@ -189,6 +189,22 @@ cmake --build --preset Debug
 
 ---
 
+### 4.2 发版（自动）
+
+打 tag 就自动出 Release，不用再手搓附件：
+
+```bash
+git tag -a v1.0.1 -m "v1.0.1" && git push origin v1.0.1
+```
+
+工作流会编一遍 Debug + Release，然后把 `v1.0.1.hex` / `.bin` / `.elf` 和 `v1.0.1-debug.elf`
+挂到 GitHub Release 上：
+
+- 标题带固件构建标记（从 `USER/Src/Ble_task.c` 的 `BLE_BUILD_TAG` 读），烧错版本能一眼看出来；
+- 说明里的**变更列表**自动取「上一个 tag..当前 tag」的提交，第一个 tag 时退化为最近 15 条；
+- 同一个 tag 重复推（比如移动过 tag）不会失败，会覆盖附件和说明；
+- 附件同时保留 Actions Artifacts 30 天，两者不冲突。
+
 ## 5. 调试与标定流程（务必按顺序）
 
 **先用安全模式**：`USER/Inc/Control_task.h` 里 `CTRL_TASK_ENABLE_MOTION = 0`，控制任务每个周期把目标锁 0，车不会动。
