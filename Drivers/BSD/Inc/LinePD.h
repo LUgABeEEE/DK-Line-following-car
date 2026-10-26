@@ -265,6 +265,15 @@
 #define LINE_RACE_BRAKE_MARGIN_CM   1.0f    /* 到点前 1cm 开始硬刹 */
 #define LINE_RACE_FALLBACK_CM       2.0f    /* 里程兜底：差 2cm 还没识别到就按里程停 */
 
+/*
+ * 自适应模式（不知道赛道周长时用）：
+ *   LAP 设 1 -> 只靠启停线识别停车，不需要周长；
+ *   起跑后先跑过 LINE_RACE_ARM_MIN_CM 才武装（避开起跑线附近的杂线）；
+ *   为了防止"一直识别不到"跑飞，跑过 LINE_RACE_MAX_CM 强制停车。
+ */
+#define LINE_RACE_ARM_MIN_CM        120.0f  /* 自适应模式的武装距离 */
+#define LINE_RACE_MAX_CM            2000.0f /* 自适应模式的安全上限 */
+
 /* 编译期默认增益 */
 /*
  * 外环比例增益，单位 cm/s 差速量 每 cm 误差。
@@ -754,6 +763,7 @@ typedef struct
 
     /* ---- 比赛自动停车 ---- */
     float   commit_target_deg; /* 本次承诺转向的目标角度（锐角/直角不同）   */
+    uint8_t race_enabled;   /* 1 = 自动停车已启用（自适应模式也置 1）                  */
     uint8_t race_phase;     /* 0=等待 1=巡航(已武装) 2=接近 3=已到位                  */
     uint8_t race_pulse;     /* 连续全黑拍数，用来区分"启停线脉冲"和"角点全黑"          */
     float   race_lap_cm;    /* 一圈周长 cm，0 = 关闭自动停车                          */

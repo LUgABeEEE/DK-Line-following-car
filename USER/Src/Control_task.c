@@ -44,7 +44,7 @@ volatile uint8_t g_ctrl_mode       = CTRL_MODE_SPEED_TEST;
 volatile float   g_speed_test_target = 0.0f;
 
 /* 比赛自动停车的一圈周长，cm；0 = 关闭（练习用） */
-volatile float   g_race_lap_cm     = 514.0f;
+volatile float   g_race_lap_cm     = 1.0f;   /* 1 = 自适应：只靠启停线识别 */
 
 /*
  * 斜坡化之后的目标速度（内部状态）。

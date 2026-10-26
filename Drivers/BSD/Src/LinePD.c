@@ -143,6 +143,7 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->straight_ticks = 0U;
     pd->speed_boost    = 0.0f;
     pd->commit_target_deg = 0.0f;
+    pd->race_enabled   = 0U;
     pd->race_phase     = 0U;
     pd->race_pulse     = 0U;
     pd->race_lap_cm    = 0.0f;
@@ -281,13 +282,17 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
      *   2 接近   —— 已识别，按 12cm/s 直行到"灰度条到测试点"的距离
      *   3 到位   —— 通知 ControlTask 硬刹停车
      */
-    if (pd->race_lap_cm > 0.0f)
+    if (pd->race_enabled != 0U)
     {
         float traveled = LinePD_RaceTravel(pd) - pd->race_start_cm;
 
         if (pd->race_phase == 0U)
         {
-            if (traveled >= (pd->race_lap_cm * LINE_RACE_ARM_FRAC))
+            float arm_cm = (pd->race_lap_cm > 0.0f)
+                           ? (pd->race_lap_cm * LINE_RACE_ARM_FRAC)
+                           : LINE_RACE_ARM_MIN_CM;
+
+            if (traveled >= arm_cm)
             {
                 pd->race_phase = 1U;
             }
@@ -310,6 +315,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                  * 角点/宽黑带会持续很多拍，靠这个把两者分开。
                  */
                 if ((pd->race_pulse <= LINE_RACE_PULSE_MAX) &&
+                    (pd->corner_dir == 0) &&
                     (gray->position_cm > -LINE_RACE_DETECT_ERR_CM) &&
                     (gray->position_cm <  LINE_RACE_DETECT_ERR_CM))
                 {
@@ -323,11 +329,19 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                 /* 没看到全黑，保持巡航 */
             }
 
-            /* 兜底：识别失败时按里程到位 */
-            if ((pd->race_phase == 1U) &&
-                (traveled >= (pd->race_lap_cm - LINE_RACE_FALLBACK_CM)))
+            /* 兜底：有周长按周长到位，自适应模式按最大里程强制停 */
+            if (pd->race_phase == 1U)
             {
-                pd->race_phase = 3U;
+                if ((pd->race_lap_cm > 0.0f) &&
+                    (traveled >= (pd->race_lap_cm - LINE_RACE_FALLBACK_CM)))
+                {
+                    pd->race_phase = 3U;
+                }
+                else if ((pd->race_lap_cm <= 0.0f) &&
+                         (traveled >= LINE_RACE_MAX_CM))
+                {
+                    pd->race_phase = 3U;
+                }
             }
         }
         else if (pd->race_phase == 2U)
@@ -1328,7 +1342,28 @@ void LinePD_RaceStart(Line_PD_t *pd, float lap_cm)
         return;
     }
 
-    pd->race_lap_cm    = (lap_cm > 0.0f) ? lap_cm : 0.0f;
+    /*
+     * LAP 语义：
+     *   0        -> 关闭自动停车
+     *   1        -> 自适应模式：只靠启停线识别，不需要周长
+     *   >= 50cm  -> 周长模式：识别为主，里程兜底
+     */
+    if (lap_cm <= 0.0f)
+    {
+        pd->race_enabled = 0U;
+        pd->race_lap_cm  = 0.0f;
+    }
+    else if (lap_cm < 2.0f)
+    {
+        pd->race_enabled = 1U;
+        pd->race_lap_cm  = 0.0f;     /* 自适应：没有周长 */
+    }
+    else
+    {
+        pd->race_enabled = 1U;
+        pd->race_lap_cm  = lap_cm;
+    }
+
     pd->race_start_cm  = LinePD_RaceTravel(pd);
     pd->race_detect_cm = 0.0f;
     pd->race_pulse     = 0U;
@@ -1342,6 +1377,7 @@ void LinePD_RaceCancel(Line_PD_t *pd)
         return;
     }
 
+    pd->race_enabled   = 0U;
     pd->race_lap_cm    = 0.0f;
     pd->race_phase     = 0U;
     pd->race_pulse     = 0U;
@@ -1354,7 +1390,7 @@ uint8_t LinePD_RaceDone(const Line_PD_t *pd)
     {
         return 0U;
     }
-    return ((pd->race_lap_cm > 0.0f) && (pd->race_phase == 3U)) ? 1U : 0U;
+    return ((pd->race_enabled != 0U) && (pd->race_phase == 3U)) ? 1U : 0U;
 }
 
 uint8_t LinePD_RacePhase(const Line_PD_t *pd)
