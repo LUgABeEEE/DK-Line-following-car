@@ -1,0 +1,92 @@
+name: build
+
+# 什么时候跑：
+#   - 推到 main / simple 任一分支
+#   - 任何 PR
+#   - 手动触发（Actions 页面上的 Run workflow）
+on:
+  push:
+    branches: [main, simple]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支连续推送时，取消上一次还没跑完的构建，省 Actions 额度
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 固件编译：Debug 和 Release 两种构建都编一遍
+  #   Debug   = -Og，带调试信息，日常烧录用
+  #   Release = -Os，体积最小，比赛前确认 Flash 余量
+  # ---------------------------------------------------------------------------
+  firmware:
+    name: firmware (${{ matrix.preset }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 ARM 工具链
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi binutils-arm-none-eabi libnewlib-arm-none-eabi \
+            cmake ninja-build
+
+      - name: 打印工具链版本
+        run: |
+          arm-none-eabi-gcc --version | head -1
+          cmake --version | head -1
+          ninja --version
+
+      - name: 配置
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: 编译
+        run: cmake --build --preset ${{ matrix.preset }} -- -j"$(nproc)"
+
+      - name: 生成 hex / bin 并检查体积
+        working-directory: build/${{ matrix.preset }}
+        run: |
+          arm-none-eabi-objcopy -O ihex   linefllowing_car.elf linefllowing_car.hex
+          arm-none-eabi-objcopy -O binary linefllowing_car.elf linefllowing_car.bin
+          echo "=== size ==="
+          arm-none-eabi-size linefllowing_car.elf
+          echo "=== sha256 ==="
+          sha256sum linefllowing_car.hex linefllowing_car.bin
+
+      - name: 上传固件
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.preset }}
+          path: |
+            build/${{ matrix.preset }}/linefllowing_car.elf
+            build/${{ matrix.preset }}/linefllowing_car.hex
+            build/${{ matrix.preset }}/linefllowing_car.bin
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # tools/ 下的 Python 脚本至少得语法正确（改脚本时不至于推上去才发现跑不起来）
+  # ---------------------------------------------------------------------------
+  tools:
+    name: tools (python syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: 语法检查
+        run: python -m compileall -q tools
