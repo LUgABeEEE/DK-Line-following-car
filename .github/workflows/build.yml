@@ -4,13 +4,15 @@ name: build
 #   - 推到 main / simple 任一分支
 #   - 任何 PR
 #   - 手动触发（Actions 页面上的 Run workflow）
+#   - 推 tag（v*）—— 除了编译，还会自动发版（见最下面的 release job）
 on:
   push:
     branches: [main, simple]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
-# 同一分支连续推送时，取消上一次还没跑完的构建，省 Actions 额度
+# 同一个 ref 连续推送时，取消上一次还没跑完的构建，省 Actions 额度
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -90,3 +92,112 @@ jobs:
 
       - name: 语法检查
         run: python -m compileall -q tools
+
+  # ---------------------------------------------------------------------------
+  # 发版：推 v* tag 时，把 Release 构建的 hex/bin/elf 挂到 GitHub Release
+  #
+  #   用法：
+  #     git tag -a v1.0.1 -m "..." && git push origin v1.0.1
+  #
+  #   特性：
+  #     - 标题带固件构建标记（从 BLE_BUILD_TAG 里读），烧错版本能一眼看出来
+  #     - 变更列表自动取「上一个 tag 到当前 tag」的提交；第一个 tag 时退化成最近 15 条
+  #     - Release 已存在（重复推同一个 tag）时改为覆盖附件，不会失败
+  # ---------------------------------------------------------------------------
+  release:
+    name: release (${{ github.ref_name }})
+    needs: [firmware]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # 创建 Release / 上传附件需要写权限
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 生成变更列表要用完整历史和 tag
+
+      - name: 取出版本信息
+        run: |
+          FW_TAG=$(grep -oE '#define[[:space:]]+BLE_BUILD_TAG[[:space:]]+"[^"]+"' USER/Src/Ble_task.c \
+                   | sed -E 's/.*"([^"]+)".*/\1/')
+          PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          {
+            echo "TAG=${GITHUB_REF_NAME}"
+            echo "FW_TAG=${FW_TAG}"
+            echo "SHORT=$(git rev-parse --short HEAD)"
+            echo "PREV=${PREV}"
+          } >> "$GITHUB_ENV"
+          echo "tag=${GITHUB_REF_NAME} 固件构建=${FW_TAG} 提交=${SHORT} 上一个 tag=${PREV}"
+
+      - name: 下载 Release 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-Release
+          path: out
+
+      - name: 下载 Debug 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-Debug
+          path: out-dbg
+
+      - name: 整理文件名
+        run: |
+          mkdir -p assets
+          cp out/linefllowing_car.hex     "assets/${TAG}.hex"
+          cp out/linefllowing_car.bin     "assets/${TAG}.bin"
+          cp out/linefllowing_car.elf     "assets/${TAG}.elf"
+          cp out-dbg/linefllowing_car.elf "assets/${TAG}-debug.elf"
+          ls -l assets
+          sha256sum assets/*
+
+      - name: 生成发行说明
+        run: |
+          BIN_SIZE=$(stat -c%s "assets/${TAG}.bin")
+          {
+            echo "## ${TAG} · 固件构建 \`${FW_TAG}\`"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 构建标记 | \`${FW_TAG}\`（连 HC-05，看 \`[VER]\` 行确认） |"
+            echo "| 提交 | \`${SHORT}\` |"
+            echo "| Flash 占用 | ${BIN_SIZE} B / 65536 B |"
+            echo ""
+            echo "### 变更"
+            echo ""
+            if [ -n "${PREV}" ]; then
+              git log --no-merges --pretty='- %s（`%h`）' "${PREV}..${TAG}"
+            else
+              git log --no-merges --pretty='- %s（`%h`）' -15
+            fi
+            echo ""
+            echo "### 烧录文件"
+            echo ""
+            echo "| 文件 | 用途 |"
+            echo "|---|---|"
+            echo "| \`${TAG}.hex\` | STM32CubeProgrammer / ST-Link Utility 直接烧 |"
+            echo "| \`${TAG}.bin\` | 起始地址 \`0x08000000\` |"
+            echo "| \`${TAG}.elf\` | Release 符号文件 |"
+            echo "| \`${TAG}-debug.elf\` | Debug 构建（\`-Og\`），单步调试用 |"
+            echo ""
+            echo "> ⚠️ USB 供电时禁止接电机（Q1 体二极管会把 VBAT 反灌到 5 V 轨）。"
+            echo "> 上车前先架空跑 \`Motor_TestSequence()\` / \`Encoder_TestSequence()\`。"
+          } > notes.md
+          cat notes.md
+
+      - name: 创建 / 更新 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} 已存在 —— 覆盖附件与说明"
+            gh release upload "${TAG}" assets/* --clobber
+            gh release edit   "${TAG}" --notes-file notes.md --title "${TAG} · 固件构建 ${FW_TAG}"
+          else
+            echo "创建 Release ${TAG}"
+            gh release create "${TAG}" \
+              --title "${TAG} · 固件构建 ${FW_TAG}" \
+              --notes-file notes.md \
+              assets/*
+          fi
