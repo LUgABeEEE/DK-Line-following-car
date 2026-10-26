@@ -649,7 +649,25 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
     derivative = pd->d_filter_state;
 
     /* ---------- 5. PD 运算 + 差速限幅 ---------- */
-    steer = (pd->kp * error) + (pd->kd * derivative);
+    {
+        /*
+         * Kp 随速度缩放：速度越高，同样误差对应的差速越小。
+         * 不缩放的话 50cm/s 时 LKP=20 会形成 ~3Hz 极限环（见头文件说明）。
+         */
+        float kp_eff = pd->kp;
+
+        if (pd->speed > LINE_KP_SPEED_REF_CMS)
+        {
+            float scale = LINE_KP_SPEED_REF_CMS / pd->speed;
+            if (scale < LINE_KP_MIN_SCALE)
+            {
+                scale = LINE_KP_MIN_SCALE;
+            }
+            kp_eff *= scale;
+        }
+
+        steer = (kp_eff * error) + (pd->kd * derivative);
+    }
     {
         /*
          * 角点事件期间放宽差速限幅：
@@ -669,6 +687,29 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 
         steer = LinePD_Clamp(steer, steer_limit);
     }
+
+    /*
+     * 差速变化速率限制：只在正常循迹时生效。
+     * assist（全黑满舵）和角点事件需要快速打满，跳过限制。
+     */
+    if ((assist == 0U) && (pd->all_assist == 0U) && (pd->corner_active == 0U))
+    {
+        float d_steer = steer - pd->steer;
+
+        if (d_steer > LINE_STEER_SLEW_CMS)
+        {
+            steer = pd->steer + LINE_STEER_SLEW_CMS;
+        }
+        else if (d_steer < -LINE_STEER_SLEW_CMS)
+        {
+            steer = pd->steer - LINE_STEER_SLEW_CMS;
+        }
+        else
+        {
+            /* 在限制范围内 */
+        }
+    }
+
     pd->steer = steer;
 
     /* ---------- 6. 速度规划：直道加速 / 弧线按曲率减速 / 直角降速 ---------- */
