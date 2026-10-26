@@ -3,6 +3,8 @@
 > 面向「电子科技协会 · 校庆智能小车竞速赛」的循迹小车工程
 > STM32F103C8T6 + FreeRTOS + TB6612 + 8 路灰度，串级双环（循迹 PD + 编码器速度 PID）
 
+[![build](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml/badge.svg)](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml)
+
 ---
 
 ## 1. 硬件构成
@@ -175,6 +177,15 @@ cmake --build --preset Debug
 > 若调试时要完整观察某个函数里的局部变量，把该文件的优化关掉单独编即可。
 
 > 本仓库不含 `build/` 产物，首次编译需自行 configure。
+
+### 4.1 CI（GitHub Actions）
+
+`.github/workflows/build.yml`：推送 `main` / `simple`、PR 或手动触发时，
+把 Debug 与 Release 两种预设都编一遍（apt 装 `gcc-arm-none-eabi` + cmake + ninja），
+产出 `.hex` / `.bin` 并上传为 `firmware-Debug` / `firmware-Release`；同时用
+`python -m compileall tools` 检查遥测脚本语法。
+
+不装本地工具链也能拿到可烧录文件：Actions → 某次运行 → **Artifacts**。
 
 ---
 
