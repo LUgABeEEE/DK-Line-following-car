@@ -187,12 +187,18 @@ cmake --build --preset Debug
 
 ### 4.1 CI（GitHub Actions）
 
-`.github/workflows/build.yml`：推送 `main` / `simple`、PR 或手动触发时，
-把 Debug 与 Release 两种预设都编一遍（apt 装 `gcc-arm-none-eabi` + cmake + ninja），
-产出 `.hex` / `.bin` 并上传为 `firmware-Debug` / `firmware-Release`；同时用
-`python -m compileall tools` 检查遥测脚本语法。
+[`.github/workflows/build.yml`](.github/workflows/build.yml) 在每次推送 `main` / `simple`、任何 PR、
+或手动触发时运行：
 
-不装本地工具链也能拿到可烧录文件：Actions → 某次运行 → **Artifacts**。
+- **firmware (Debug / Release)**：`apt` 装 `gcc-arm-none-eabi` + `cmake` + `ninja`，
+  按 `CMakePresets.json` 把两种构建都编一遍，额外产出 `.hex` / `.bin` 并打印 `arm-none-eabi-size`；
+  产物以 `firmware-Debug` / `firmware-Release` 上传，保留 30 天
+- **tools (python syntax)**：`python -m compileall tools`，避免遥测脚本语法错误推上去才发现
+
+不装本地工具链也能拿到可烧录文件：Actions → 某次运行 → 页面底部 **Artifacts** → `firmware-Release`。
+
+> 私有仓库的 Actions 会消耗额度（每次约 2 个 Linux 分钟 × 矩阵大小），
+> 调参时频繁推送可以把 Debug 单独保留、Release 只在要比赛前跑。
 
 ---
 
@@ -318,7 +324,7 @@ python3 tools/tag_report.py logs/serial_20261026_*.log
 ### 5.7 简单赛道速度规划（`simple` 分支）
 
 单独开了 `simple` 分支，针对**只有弧线和直角**的简单赛道做速度与稳定性优化；
-锐角/复杂赛道仍然用 `main`（构建 `t`，承诺转向 115°）。
+锐角/复杂赛道仍然用 `main`（构建 `s`，承诺转向 115°），本分支构建 `v`。
 
 思路参考了这些公开实现：
 
@@ -342,16 +348,29 @@ python3 tools/tag_report.py logs/serial_20261026_*.log
 斜坡       → 加速 50 cm/s²，减速 100 cm/s²（进弯果断、出弯平缓）
 ```
 
-调参（都在 `Drivers/BSD/Inc/LinePD.h`）：
+### 5.7.1 赛道档位：换赛道只改一个宏
+
+不同「简单赛道」的弯半径和直道长度差别很大，同一套速度参数往往一条太保守、另一条又冒进。
+所以速度规划整体做了 3 档，改 `LINE_SIMPLE_PROFILE`（`Drivers/BSD/Inc/LinePD.h`）即可切换：
+
+| 档位 | 适用场景 | 基础速度 | 直道加速 | 角点限速 | 入弯预判 | 减速斜坡 |
+|---|---|---|---|---|---|---|
+| `0` 保守 | 弯多直道短 / 新场地第一次跑 | 26 cm/s | +15 % | 0.65 | 0.80 | 2.5× |
+| `1` 均衡（默认） | 大多数「弧线 + 直角」赛道 | 30 cm/s | +25 % | 0.72 | 0.70 | 2.0× |
+| `2` 激进 | 直道占比高、弯缓、抓地好 | 34 cm/s | +35 % | 0.82 | 0.60 | 1.6× |
+
+- 档位**只改速度规划**，不动 `KP` / `KD` / 差速限幅 —— 切档改的是过弯快慢，不是过弯轨迹；
+- 换档后先跑一圈确认整圈不丢线，再谈圈速；
+- 烧录后连蓝牙看 `[VER] ... P1`，末尾的 `P?` 就是当前档位（`v` 版固件起支持）。
+
+### 5.7.2 与档位无关的形态参数
 
 | 宏 | 默认 | 作用 |
 |---|---|---|
-| `LINE_STRAIGHT_BOOST_MAX` | 0.25 | 直道最多加速 25%；轮子够用可以到 0.35 |
-| `LINE_STRAIGHT_TICKS` | 5 | 连续居中多少拍才开始加速（40ms 一拍） |
-| `LINE_CORNER_SLOW_MAX` | 0.72 | 角点事件期间的速度上限系数 |
 | `LINE_DEPTH_W_STEER` | 0.40 | 差速需求在曲率深度里的权重（越大越早减速） |
-| `LINE_LEAD_WEIGHT` | 0.70 | 入弯预判强度 |
-| `LINE_DOWN_RAMP_MULT` | 2.0 | 减速斜坡相对加速的倍数 |
+| `LINE_STRAIGHT_EPS_CM` / `LINE_STRAIGHT_STEER_CM` | 0.35 / 8.0 | 判定「直道」的门槛 |
+| `LINE_SPEED_RAMP_CMS_PER_SEC` | 50 | 加速斜坡（减速为其 `LINE_DOWN_RAMP_MULT` 倍） |
+| `LINE_SPEED_LIMIT` | 75 | 目标速度绝对上限 |
 
 注意：
 

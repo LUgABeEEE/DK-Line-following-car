@@ -227,21 +227,60 @@
 
 /* 入弯预判：误差变化率超过这个值（cm/s）就按满深度处理 */
 #define LINE_LEAD_DERR_MAX          80.0f
-#define LINE_LEAD_WEIGHT            0.70f
 
-/* 直道加速：连续居中多少拍才允许加、每拍加多少、上限多少 */
+/* 直道加速的判定门槛：误差、差速、每拍增量（这三项与档位无关） */
 #define LINE_STRAIGHT_EPS_CM        0.35f
 #define LINE_STRAIGHT_STEER_CM      8.0f
-#define LINE_STRAIGHT_TICKS         5U
 #define LINE_STRAIGHT_BOOST_STEP    0.03f
-#define LINE_STRAIGHT_BOOST_MAX     0.25f
 #define LINE_BOOST_DECAY_STEP       0.06f
 
-/* 角点事件期间的速度上限系数（直角/锐角宁可慢一点） */
-#define LINE_CORNER_SLOW_MAX        0.72f
+/* ------------------------------------------------------------------------- */
+/* 赛道档位 —— 换赛道只改这一个宏                                              */
+/* ------------------------------------------------------------------------- */
 
-/* 减速斜坡是加速斜坡的多少倍：进弯果断、出弯平缓 */
+/*
+ * 不同「简单赛道」的弯半径、直道长度差别很大。同一套速度参数跑两条赛道，
+ * 往往一条太保守、另一条又冒进。所以这里按档位整组切换：
+ *
+ *   0 = 保守：弯多、直道短，或新场地第一次上车
+ *   1 = 均衡：默认值，大多数「弧线 + 直角」赛道从这一档起步
+ *   2 = 激进：直道占比高、弯半径大、地面抓地好
+ *
+ * 每档只动「速度规划」——基础速度、直道加速、角点限速、入弯预判、减速斜坡；
+ * 转向增益（Kp / Kd / 差速限幅）保持不动，所以切档只改过弯快慢，不改过弯轨迹。
+ *
+ * ⚠️ 换档后先跑一圈确认整圈不丢线，再谈圈速。烧进去之后连蓝牙看 [VER] 行，
+ *    末尾会带 P0/P1/P2，用来确认烧的是哪一档。
+ */
+#define LINE_SIMPLE_PROFILE         1
+
+#if (LINE_SIMPLE_PROFILE == 0)
+/* 保守：宁可慢，先把整圈跑完 */
+#define LINE_PD_DFLT_BASE_SPEED     26.0f   /* 基础速度 cm/s                 */
+#define LINE_STRAIGHT_TICKS         6U      /* 连续居中几拍才开始加速         */
+#define LINE_STRAIGHT_BOOST_MAX     0.15f   /* 直道最多 +15%                 */
+#define LINE_CORNER_SLOW_MAX        0.65f   /* 角点期间的速度上限系数         */
+#define LINE_LEAD_WEIGHT            0.80f   /* 入弯预判强度（越大越早减速）   */
+#define LINE_DOWN_RAMP_MULT         2.5f    /* 减速斜坡相对加速的倍数         */
+
+#elif (LINE_SIMPLE_PROFILE == 2)
+/* 激进：直道长、弯缓的赛道 */
+#define LINE_PD_DFLT_BASE_SPEED     34.0f
+#define LINE_STRAIGHT_TICKS         4U
+#define LINE_STRAIGHT_BOOST_MAX     0.35f
+#define LINE_CORNER_SLOW_MAX        0.82f
+#define LINE_LEAD_WEIGHT            0.60f
+#define LINE_DOWN_RAMP_MULT         1.6f
+
+#else
+/* 均衡（默认；非法值也落到这一档） */
+#define LINE_PD_DFLT_BASE_SPEED     30.0f
+#define LINE_STRAIGHT_TICKS         5U
+#define LINE_STRAIGHT_BOOST_MAX     0.25f
+#define LINE_CORNER_SLOW_MAX        0.72f
+#define LINE_LEAD_WEIGHT            0.70f
 #define LINE_DOWN_RAMP_MULT         2.0f
+#endif
 
 /*
  * ---- 高速稳定性 ----
@@ -333,7 +372,12 @@
  *   改外环周期后如果出现抖动，第一个要怀疑的就是 KD。
  */
 #define LINE_PD_DFLT_KD             1.0f
-#define LINE_PD_DFLT_BASE_SPEED     30.0f   /* 基础速度 cm/s               */
+
+/*
+ * 基础速度由上面的「赛道档位」决定（LINE_SIMPLE_PROFILE）：
+ *   0 保守 = 26 cm/s，1 均衡 = 30 cm/s，2 激进 = 34 cm/s。
+ * 想临时改速度但仍保留档位的其它参数，直接改对应分支里的数值即可。
+ */
 
 /*
  * 循迹模式的起步斜坡，单位 cm/s per second。
