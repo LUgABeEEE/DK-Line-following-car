@@ -204,6 +204,15 @@ int main(void)
   Key_Init();              /* 三个按键采信当前电平作为初始稳定态 */
   BLE_Init();              /* KEY 拉低=透传模式，启动 USART2 字节中断接收 */
 
+#if (BLE_AUTOCONFIG_ON_BOOT != 0)
+  /*
+   * 上电把 HC-05 配置成：从机 + 广播名 LFCar + 配对码 1234。
+   * 模块上电未配对时就是 AT 模式（9600），所以这里不需要手动按 KEY；
+   * 配置失败（比如模块没接）只是返回 0，不影响后面的透传。
+   */
+  (void)BLE_AutoConfig();
+#endif
+
   /*
    * OLED 初始化。
    *

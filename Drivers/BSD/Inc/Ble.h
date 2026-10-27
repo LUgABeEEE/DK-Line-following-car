@@ -153,6 +153,18 @@ uint8_t BLE_SetBaud(uint32_t baud);
 /* 设置广播名（最长 32 字节）。 */
 uint8_t BLE_SetName(const char *name);
 
+/* 上电是否自动配置模块（从机 + 名字 LFCar + 配对码 1234）。1=开启 */
+#define BLE_AUTOCONFIG_ON_BOOT      1
+
+/*
+ * 上电自动配置 HC-05：按 9600 / 38400 两种 AT 波特率握手，
+ * 成功则设置 从机、广播名 LFCar、配对码 1234。
+ * 返回 1 = 配置成功；0 = 模块不在 AT 模式（不影响透传，忽略即可）。
+ * 说明：HC-05 上电、未配对时就是 AT 模式（9600），所以上电即可配置，
+ *       不需要手动按 KEY。
+ */
+uint8_t BLE_AutoConfig(void);
+
 /* 设置配对码（4 位数字字符串，如 "1234"）。 */
 uint8_t BLE_SetPin(const char *pin);
 

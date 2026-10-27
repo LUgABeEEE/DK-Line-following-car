@@ -197,6 +197,23 @@ void BLE_ExitATMode(void)
     BLE_FlushRx();
 }
 
+/*
+ * 切换 USART2 的波特率（只用于 AT 握手时试 9600/38400）。
+ * 重新 Init 之后必须重新挂上中断接收，否则收不到模块响应。
+ */
+static uint8_t BLE_SetBaudInternal(uint32_t baud)
+{
+    huart2.Init.BaudRate = baud;
+
+    if (HAL_UART_Init(&huart2) != HAL_OK)
+    {
+        return 0U;
+    }
+
+    (void)HAL_UART_Receive_IT(&huart2, &s_rx_byte, 1U);
+    return 1U;
+}
+
 /* ------------------------------------------------------------------------- */
 /* 发送                                                                        */
 /* ------------------------------------------------------------------------- */
@@ -400,6 +417,70 @@ uint8_t BLE_SetBaud(uint32_t baud)
     (void)snprintf(cmd, sizeof(cmd), "AT+UART=%lu,0,0", (unsigned long)baud);
 
     return BLE_SendAT(cmd, resp, sizeof(resp));
+}
+
+/*
+ * 上电自动配置 HC-05。
+ *
+ * 依据 HC-05 规格书：
+ *   - 模块上电、未配对时处于 AT 命令模式，波特率=模块自身波特率（出厂 9600）；
+ *   - 若上电瞬间 KEY 为高，则固定 38400。
+ * 所以这里先试 9600、再试 38400，握手成功后配置：
+ *   AT+ROLE=0        从机
+ *   AT+NAME=LFCar    广播名
+ *   AT+PSWD=1234     配对码
+ * 波特率保持 9600 不动（规格书：改波特率后要重新上电才生效，没必要冒险）。
+ *
+ * 返回 1 = 握手并配置成功；0 = 没找到模块/不在 AT 模式（不影响透传使用）。
+ */
+uint8_t BLE_AutoConfig(void)
+{
+    static const uint32_t bauds[2] = { 9600U, 38400U };
+    char     resp[BLE_LINE_BUFFER_SIZE];
+    uint8_t  ok = 0U;
+    uint32_t used_baud = 9600U;
+    uint32_t i;
+
+    BLE_EnterATMode();
+
+    for (i = 0U; i < 2U; i++)
+    {
+        if (BLE_SetBaudInternal(bauds[i]) == 0U)
+        {
+            continue;
+        }
+
+        BLE_FlushRx();
+        HAL_Delay(20U);
+
+        if ((BLE_SendAT("AT", resp, sizeof(resp)) != 0U) &&
+            (strstr(resp, "OK") != NULL))
+        {
+            ok = 1U;
+            used_baud = bauds[i];
+            break;
+        }
+    }
+
+    if (ok == 0U)
+    {
+        (void)BLE_SetBaudInternal(9600U);
+        BLE_ExitATMode();
+        return 0U;
+    }
+
+    (void)BLE_SendAT("AT+ROLE=0",       resp, sizeof(resp));
+    (void)BLE_SendAT("AT+NAME=LFCar",   resp, sizeof(resp));
+    (void)BLE_SendAT("AT+PSWD=1234",    resp, sizeof(resp));
+
+    if (used_baud != 9600U)
+    {
+        (void)BLE_SetBaudInternal(9600U);
+    }
+
+    BLE_ExitATMode();
+    HAL_Delay(20U);
+    return 1U;
 }
 
 uint8_t BLE_SetName(const char *name)
