@@ -254,6 +254,31 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
         }
     }
 
+    /* ---------- 4b. 启停线短脉冲检测 ---------- */
+    /*
+     * 5cm 横线：8 路同时黑 1~3 拍；角点/宽黑带持续更久。
+     * 结果锁存在 stop_bar_seen，由 LinePD 消费（外环 40ms 可能整拍漏掉）。
+     */
+    if (sensor->active_count >= GRAY_STOP_BAR_CHANNELS)
+    {
+        if (sensor->stop_pulse < 0xFFU)
+        {
+            sensor->stop_pulse++;
+        }
+    }
+    else if (sensor->stop_pulse > 0U)
+    {
+        if (sensor->stop_pulse <= GRAY_STOP_BAR_PULSE_MAX)
+        {
+            sensor->stop_bar_seen = 1U;
+        }
+        sensor->stop_pulse = 0U;
+    }
+    else
+    {
+        /* 保持 */
+    }
+
     /* ---------- 5. 逐通道求权重，累加求加权质心 ---------- */
     /*
      * 权重的来源分两层：

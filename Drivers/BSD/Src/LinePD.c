@@ -299,34 +299,24 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         }
         else if (pd->race_phase == 1U)
         {
-            uint8_t all_black = (gray->active_count >= LINE_RACE_DETECT_CHANNELS) ? 1U : 0U;
+            /*
+             * 启停线识别。
+             *
+             * 判定在 Gray_Update（20ms 一拍）里做：5cm 横线在 50cm/s 时
+             * 只黑 36ms，外环 40ms 一拍可能整拍漏掉（实测就是这样丢的）。
+             * 这里只消费 Gray 锁存的"短全黑脉冲"标志。
+             */
+            if (gray->stop_bar_seen != 0U)
+            {
+                gray->stop_bar_seen = 0U;
 
-            if (all_black != 0U)
-            {
-                if (pd->race_pulse < 0xFFU)
-                {
-                    pd->race_pulse++;
-                }
-            }
-            else if (pd->race_pulse > 0U)
-            {
-                /*
-                 * 全黑结束：短脉冲（1~3 拍）才是启停线；
-                 * 角点/宽黑带会持续很多拍，靠这个把两者分开。
-                 */
-                if ((pd->race_pulse <= LINE_RACE_PULSE_MAX) &&
-                    (pd->corner_dir == 0) &&
+                if ((pd->corner_dir == 0) &&
                     (gray->position_cm > -LINE_RACE_DETECT_ERR_CM) &&
                     (gray->position_cm <  LINE_RACE_DETECT_ERR_CM))
                 {
                     pd->race_phase     = 2U;
                     pd->race_detect_cm = traveled;
                 }
-                pd->race_pulse = 0U;
-            }
-            else
-            {
-                /* 没看到全黑，保持巡航 */
             }
 
             /* 兜底：有周长按周长到位，自适应模式按最大里程强制停 */

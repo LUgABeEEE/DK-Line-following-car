@@ -39,7 +39,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "ab"
+#define BLE_BUILD_TAG   "ac"
 
 /*
  * UART 发送超时，单位 ms。
@@ -634,7 +634,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-26ab (built " __DATE__ " " __TIME__ ")\r\n");
+    BleTask_Print("[VER] line-follower 2025-10-27ac (built " __DATE__ " " __TIME__ ")\r\n");
     BleTask_Print("[BleTask] X=stop I=scan I2C\r\n");
 
     /* 同步一次连接状态，避免把"上电时已连接"误报成一次新连接 */
@@ -695,11 +695,26 @@ static void BleTask_Main(void *argument)
 
             while (xQueueReceive(s_tag_queue, &tag, 0U) == pdTRUE)
             {
-                s_tag_seq++;
-                BleTask_Print("[T] %s #%u t%lu\r\n",
-                              (tag != 0U) ? "OK" : "FAIL",
-                              (unsigned int)s_tag_seq,
-                              (unsigned long)HAL_GetTick());
+                if (tag == 2U)
+                {
+                    /* 自动停车：识别到启停线（控制任务只入队，不阻塞串口） */
+                    BleTask_Print("[RACE] det t%lu\r\n",
+                                  (unsigned long)HAL_GetTick());
+                }
+                else if (tag == 3U)
+                {
+                    /* 自动停车：已到位 */
+                    BleTask_Print("[RACE] stop t%lu\r\n",
+                                  (unsigned long)HAL_GetTick());
+                }
+                else
+                {
+                    s_tag_seq++;
+                    BleTask_Print("[T] %s #%u t%lu\r\n",
+                                  (tag != 0U) ? "OK" : "FAIL",
+                                  (unsigned int)s_tag_seq,
+                                  (unsigned long)HAL_GetTick());
+                }
             }
         }
 
@@ -783,7 +798,7 @@ static void BleTask_Main(void *argument)
                      * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
                      * 放在这里就能保证每次连接都能确认。
                      */
-                    BleTask_Print("[VER] line-follower 2025-10-26ab (built "
+                    BleTask_Print("[VER] line-follower 2025-10-27ac (built "
                                   __DATE__ " " __TIME__ ")\r\n");
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");
                 }

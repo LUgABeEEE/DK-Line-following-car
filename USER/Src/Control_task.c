@@ -61,8 +61,8 @@ static uint8_t s_last_mode = CTRL_MODE_SPEED_TEST;
 /* 自动停车只打印一次 */
 static uint8_t s_race_announced = 0U;
 
-/* 串口句柄（自动停车提示用，定义在 main.c） */
-extern UART_HandleTypeDef huart2;
+/* 自动停车阶段（用于只在"识别到/到位"那一刻各发一条队列消息） */
+static uint8_t s_race_last_phase = 0U;
 
 /*
  * 按键短按/长按判定。
@@ -137,6 +137,7 @@ static void ControlTask_Main(void *argument)
                 /* 启动比赛自动停车（g_race_lap_cm=0 时等于关闭） */
                 LinePD_RaceStart(&g_line_pd, g_race_lap_cm);
                 s_race_announced = 0U;
+                s_race_last_phase = 0U;
             }
             else
             {
@@ -188,6 +189,20 @@ static void ControlTask_Main(void *argument)
              * 走和急停完全相同的路径（切 STOP + 清积分 + 硬制动），
              * 保证停车行为和长按 KEY2 / 蓝牙 X 一致。
              */
+            /*
+             * 自动停车阶段变化：只在"识别到启停线"那一拍入队一条 [RACE] det。
+             * 串口打印放在蓝牙任务里，控制任务不阻塞。
+             */
+            {
+                uint8_t ph = LinePD_RacePhase(&g_line_pd);
+
+                if ((ph == 2U) && (s_race_last_phase != 2U))
+                {
+                    (void)BleTask_SendTag(2U);
+                }
+                s_race_last_phase = ph;
+            }
+
             if (LinePD_RaceDone(&g_line_pd) != 0U)
             {
                 ControlTask_RequestStop();
@@ -196,9 +211,7 @@ static void ControlTask_Main(void *argument)
                 if (s_race_announced == 0U)
                 {
                     s_race_announced = 1U;
-                    (void)HAL_UART_Transmit(&huart2,
-                                            (uint8_t *)"[RACE] stop\r\n",
-                                            13U, 100U);
+                    (void)BleTask_SendTag(3U);      /* 队列里发 [RACE] stop */
                 }
             }
             break;
