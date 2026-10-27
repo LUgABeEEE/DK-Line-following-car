@@ -152,6 +152,9 @@ static void ControlTask_Main(void *argument)
                 LinePD_RaceStart(&g_line_pd, g_race_lap_cm);
                 s_race_announced = 0U;
                 s_race_last_phase = 0U;
+
+                /* 每次开跑把陀螺航向清零，[L] 的 y 和定角转弯都从 0 起算 */
+                MPU6050_ResetYaw(0.0f);
             }
             else
             {

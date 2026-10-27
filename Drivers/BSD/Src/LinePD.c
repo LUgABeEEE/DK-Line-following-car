@@ -20,6 +20,7 @@
 
 #include "LinePD.h"
 #include "Encoder.h"        /* 自动停车要用累计里程 */
+#include "MPU6050.h"        /* 陀螺航向 / yaw 阻尼 */
 #include <stdio.h>
 #include <string.h>
 
@@ -264,13 +265,24 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         return LINE_PD_ERR_I2C;
     }
 
-    /* ---------- 1b. 编码器偏航角积分（方案 C：定角转弯） ---------- */
+    /* ---------- 1b. 偏航角：优先用陀螺，没有模块时退回编码器 ---------- */
     /*
      * yaw += (v_right - v_left) / 轮距 × dt
      *   左转 -> 右轮快 -> 为正，与 corner_dir 的符号约定一致。
      * dt 用 HAL_GetTick 的真实间隔，不用名义 40ms：
      *   外环偶尔会被高优先级任务推迟，按名义周期积分会系统性少算角度。
      */
+    if ((LINE_USE_IMU_YAW != 0) && (MPU6050_IsReady() != 0U))
+    {
+        /*
+         * B) 陀螺航向：直接取 MPU6050 积分好的角度。
+         *    打滑时轮子转得比车身多，编码器差分算出的角度偏大；
+         *    陀螺测的是车身真实转动，直角/锐角的定角转弯因此更准。
+         */
+        pd->yaw_deg = MPU6050_GetYawDeg();
+        pd->last_yaw_tick = HAL_GetTick();
+    }
+    else
     {
         uint32_t now_tick = HAL_GetTick();
         uint32_t dt_ms    = now_tick - pd->last_yaw_tick;
@@ -756,6 +768,20 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 
             ff = LinePD_Clamp(ff, ff_limit);
             steer += ff;
+        }
+
+        /*
+         * A) yaw 阻尼：车身正在转（ω_yaw）就反向给差速，
+         *    把"过弯后半段/出弯"的摆动压下去。
+         *    只在正常循迹时生效，直角事件/assist 内不加，免得转向发肉。
+         */
+        if ((assist == 0U) && (pd->all_assist == 0U) &&
+            (pd->corner_active == 0U) && (MPU6050_IsReady() != 0U))
+        {
+            float damp = LINE_YAW_DAMP_GAIN * MPU6050_GetYawRateDps();
+
+            damp = LinePD_Clamp(damp, LINE_YAW_DAMP_MAX_CMS);
+            steer -= damp;
         }
     }
     {

@@ -311,6 +311,23 @@
 #define LINE_THETA_LPF              0.50f   /* θ 低通系数 */
 #define LINE_POS_LPF_ALPHA          0.50f   /* 位置低通系数 */
 
+/*
+ * ---- 惯导（MPU6050）：A yaw 阻尼 / B 陀螺航向 / C 定角转弯 ----
+ *
+ * A) yaw 阻尼：车身在转时给一个反向差速，压制"过弯后半段来回摆"：
+ *      steer -= LINE_YAW_DAMP_GAIN × ω_yaw
+ *    ω_yaw 单位 °/s，增益单位 cm/s per °/s。太大转向会发肉，0.1~0.2 起步。
+ *
+ * B) 陀螺航向：yaw 积分从"编码器差分"换成"陀螺"，打滑不再影响角度。
+ *    没有模块/读取失败时自动退回编码器差分。
+ *
+ * C) 定角转弯：承诺转向的目标角（直角 90°/锐角 95°）现在由 B 的陀螺航向
+ *    计量，转够就停，不再依赖打滑的轮速积分。
+ */
+#define LINE_USE_IMU_YAW            1
+#define LINE_YAW_DAMP_GAIN          0.12f   /* cm/s per (°/s) */
+#define LINE_YAW_DAMP_MAX_CMS       8.0f    /* 阻尼项限幅 */
+
 #define LINE_KP_SPEED_REF_CMS       30.0f   /* 参考速度，低于它不缩放 */
 #define LINE_KP_MIN_SCALE           0.55f   /* 高速时 Kp 最低缩到 55% */
 #define LINE_STEER_SLEW_CMS         22.0f   /* 每周期差速最大变化量 */
