@@ -142,6 +142,10 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->speed          = 0.0f;
     pd->straight_ticks = 0U;
     pd->speed_boost    = 0.0f;
+    pd->pos_filter     = 0.0f;
+    pd->theta_rad      = 0.0f;
+    pd->last_pos_f     = 0.0f;
+    pd->last_dist_cm   = 0.0f;
     pd->commit_target_deg = 0.0f;
     pd->race_enabled   = 0U;
     pd->race_phase     = 0U;
@@ -576,6 +580,20 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
     error_limit = LinePD_ErrorLimit();
     error = LinePD_Clamp(Gray_GetPositionCm(gray), error_limit);
 
+    /*
+     * B) 位置低通：丢线时直接把滤波器拉到当前值，避免拖尾
+     *    （丢线时 Gray 给的是满幅回退值，平滑它没有意义）。
+     */
+    if (Gray_IsLineLost(gray) != 0U)
+    {
+        pd->pos_filter = error;
+    }
+    else
+    {
+        pd->pos_filter += LINE_POS_LPF_ALPHA * (error - pd->pos_filter);
+    }
+    error = pd->pos_filter;
+
     assist = 0U;
 #if (LINE_ALL_AS_CORNER != 0)
     if ((pd->corner_active != 0U) &&
@@ -592,6 +610,37 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
     }
 #endif
     pd->error = error;
+
+    /*
+     * A) 线角估计：θ = Δ位置 / Δ里程。
+     *
+     *   θ > 0   线朝左斜 -> 车要向左转（与 error 的符号约定一致）
+     *   丢线/assist/车没动时不计，θ 慢慢回零
+     *
+     * 小角度近似 tanθ≈θ，整段不需要 atan，避免引入 libm。
+     */
+    {
+        float dist_now = LinePD_RaceTravel(pd);
+        float ds       = dist_now - pd->last_dist_cm;
+
+        if ((Gray_IsLineLost(gray) != 0U) || (assist != 0U) ||
+            (ds <= 0.05f) || (ds > 5.0f))
+        {
+            pd->last_dist_cm = dist_now;
+            pd->last_pos_f   = pd->pos_filter;
+            pd->theta_rad   += 0.5f * (0.0f - pd->theta_rad);
+        }
+        else
+        {
+            float th = (pd->pos_filter - pd->last_pos_f) / ds;
+
+            th = LinePD_Clamp(th, LINE_THETA_MAX_RAD);
+            pd->theta_rad += LINE_THETA_LPF * (th - pd->theta_rad);
+
+            pd->last_dist_cm = dist_now;
+            pd->last_pos_f   = pd->pos_filter;
+        }
+    }
 
     /* ---------- 3. 丢线计数 ---------- */
     if (Gray_IsLineLost(gray) != 0U)
@@ -695,6 +744,19 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         }
 
         steer = (kp_eff * error) + (pd->kd * derivative);
+
+        /*
+         * 线角前馈：只在线、不在角点事件、不在 assist 时叠加，
+         * 避免直角/全黑时把角度估计的毛刺放大。
+         */
+        if ((assist == 0U) && (pd->all_assist == 0U) && (pd->corner_active == 0U))
+        {
+            float ff = LINE_THETA_FF_GAIN * pd->speed * pd->theta_rad;
+            float ff_limit = pd->diff_limit * 0.60f;
+
+            ff = LinePD_Clamp(ff, ff_limit);
+            steer += ff;
+        }
     }
     {
         /*

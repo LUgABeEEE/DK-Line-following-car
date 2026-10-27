@@ -295,6 +295,22 @@
  *   2) 差速变化速率限制：每个外环周期最多变 LINE_STEER_SLEW_CMS，
  *      把"来回打满"的低频摆动压成平滑过渡。
  */
+/*
+ * ---- 弧线流畅度：线角前馈 + 位置低通 ----
+ *
+ * A) 线角前馈：用"位置变化 / 里程变化"估计线在车头下的切线角 θ，
+ *    直接给一个前馈差速，不等误差积累。小角度下 tanθ≈θ，不需要 atan。
+ *      steer_ff = LINE_THETA_FF_GAIN × v × θ
+ *    其中 gain ≈ 轮距/前视距离（16cm 轮距、10cm 等效前视 -> 1.6）。
+ *
+ * B) 位置低通：8 路量化步长 0.7cm，50cm/s 时误差是阶梯状，
+ *    先一阶低通再进 PD，能明显压掉"阶梯引起的高频摆动"。
+ */
+#define LINE_THETA_FF_GAIN          1.60f   /* 前馈增益（× v × θ） */
+#define LINE_THETA_MAX_RAD          0.70f   /* θ 限幅（约 40°） */
+#define LINE_THETA_LPF              0.50f   /* θ 低通系数 */
+#define LINE_POS_LPF_ALPHA          0.50f   /* 位置低通系数 */
+
 #define LINE_KP_SPEED_REF_CMS       30.0f   /* 参考速度，低于它不缩放 */
 #define LINE_KP_MIN_SCALE           0.55f   /* 高速时 Kp 最低缩到 55% */
 #define LINE_STEER_SLEW_CMS         22.0f   /* 每周期差速最大变化量 */
@@ -828,6 +844,12 @@ typedef struct
     float   speed;          /* 最近一次的目标基础速度，cm/s                   */
     uint8_t straight_ticks; /* 直道连续居中拍数（simple track 直道加速用）             */
     float   speed_boost;    /* 直道加速系数，0 ~ LINE_STRAIGHT_BOOST_MAX              */
+
+    /* ---- 弧线流畅度（线角前馈 + 位置低通）---- */
+    float   pos_filter;     /* 低通后的横向位置 cm                                    */
+    float   theta_rad;      /* 线在车头下的切线角（rad，低通后）                       */
+    float   last_pos_f;     /* 上一拍的滤波位置                                       */
+    float   last_dist_cm;   /* 上一拍的两轮平均里程                                   */
 
     /* ---- 比赛自动停车 ---- */
     float   commit_target_deg; /* 本次承诺转向的目标角度（锐角/直角不同）   */
