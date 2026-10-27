@@ -3,6 +3,8 @@
 > 面向「电子科技协会 · 校庆智能小车竞速赛」的循迹小车工程
 > STM32F103C8T6 + FreeRTOS + TB6612 + 8 路灰度，串级双环（循迹 PD + 编码器速度 PID）
 
+[![build](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml/badge.svg)](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml)
+
 ---
 
 ## 1. 硬件构成
@@ -183,7 +185,32 @@ cmake --build --preset Debug
 
 > 本仓库不含 `build/` 产物，首次编译需自行 configure。
 
+### 4.1 CI（GitHub Actions）
+
+`.github/workflows/build.yml`：推送 `main` / `simple`、PR 或手动触发时，
+把 Debug 与 Release 两种预设都编一遍（apt 装 `gcc-arm-none-eabi` + cmake + ninja），
+产出 `.hex` / `.bin` 并上传为 `firmware-Debug` / `firmware-Release`；同时用
+`python -m compileall tools` 检查遥测脚本语法。
+
+不装本地工具链也能拿到可烧录文件：Actions → 某次运行 → **Artifacts**。
+
 ---
+
+### 4.2 发版（自动）
+
+打 tag 就自动出 Release，不用再手搓附件：
+
+```bash
+git tag -a v1.0.1 -m "v1.0.1" && git push origin v1.0.1
+```
+
+工作流会编一遍 Debug + Release，然后把 `v1.0.1.hex` / `.bin` / `.elf` 和 `v1.0.1-debug.elf`
+挂到 GitHub Release 上：
+
+- 标题带固件构建标记（从 `USER/Src/Ble_task.c` 的 `BLE_BUILD_TAG` 读），烧错版本能一眼看出来；
+- 说明里的**变更列表**自动取「上一个 tag..当前 tag」的提交，第一个 tag 时退化为最近 15 条；
+- 同一个 tag 重复推（比如移动过 tag）不会失败，会覆盖附件和说明；
+- 附件同时保留 Actions Artifacts 30 天，两者不冲突。
 
 ## 5. 调试与标定流程（务必按顺序）
 
