@@ -271,6 +271,7 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
         if (sensor->stop_pulse <= GRAY_STOP_BAR_PULSE_MAX)
         {
             sensor->stop_bar_seen = 1U;
+            sensor->stop_bar_len  = sensor->stop_pulse;
         }
         sensor->stop_pulse = 0U;
     }

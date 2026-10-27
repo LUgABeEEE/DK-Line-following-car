@@ -399,8 +399,13 @@ if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
                             if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
                             {
                                 (void)BleTask_SendTag(1U);
-                                OledTask_SetModePage();
                             }
+
+                            /*
+                             * 不管在哪个模式，长按 KEY3 都把页面切回 MODE 页：
+                             * 按下瞬间会把页面翻走，这里负责翻回来。
+                             */
+                            OledTask_SetModePage();
                         }
                     }
                     else if (event == KEY_EVENT_RELEASE)

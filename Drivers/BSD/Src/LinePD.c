@@ -209,6 +209,15 @@ void LinePD_Stop(Line_PD_t *pd)
 /* 核心                                                                        */
 /* ------------------------------------------------------------------------- */
 
+/*
+ * 自适应模式学到的"一圈周长"。
+ *
+ * 只要有一次成功识别到启停线，就用"识别时的里程 + 17cm"估出周长，
+ * 之后即使高速漏检，也能按里程兜底停车。
+ * 断电丢失（放 RAM）——重启后先低速跑一圈即可重新学到。
+ */
+static float s_learned_lap_cm = 0.0f;
+
 /* 两轮累计里程的平均值，cm（编码器量的是轮子转过的距离） */
 static float LinePD_RaceTravel(const Line_PD_t *pd)
 {
@@ -308,15 +317,36 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
              */
             if (gray->stop_bar_seen != 0U)
             {
-                gray->stop_bar_seen = 0U;
-
-                if ((pd->corner_dir == 0) &&
-                    (gray->position_cm > -LINE_RACE_DETECT_ERR_CM) &&
-                    (gray->position_cm <  LINE_RACE_DETECT_ERR_CM))
+                /*
+                 * 判定：
+                 *   - 很短的脉冲（<=2 拍 = 40ms）即使有方向锁存也认，
+                 *     因为高速下识别窗口本来就只有 1~2 拍，再要求方向会漏；
+                 *   - 稍长的脉冲（3 拍）才要求"没有方向证据"，排除角点。
+                 * 横向误差放宽到 1.6cm（高速时车身偏一点也能认）。
+                 */
+                if (((gray->stop_bar_len <= 2U) || (pd->corner_dir == 0)) &&
+                    (gray->position_cm > -1.6f) &&
+                    (gray->position_cm <  1.6f))
                 {
                     pd->race_phase     = 2U;
                     pd->race_detect_cm = traveled;
+
+                    /* 学习周长：识别点 + 17cm（只做自适应模式） */
+                    if (pd->race_lap_cm <= 0.0f)
+                    {
+                        float lap_est = traveled + LINE_RACE_STOP_OFFSET_CM;
+
+                        if (s_learned_lap_cm > 0.0f)
+                        {
+                            s_learned_lap_cm = (s_learned_lap_cm * 0.7f) + (lap_est * 0.3f);
+                        }
+                        else
+                        {
+                            s_learned_lap_cm = lap_est;
+                        }
+                    }
                 }
+                gray->stop_bar_seen = 0U;
             }
 
             /* 兜底：有周长按周长到位，自适应模式按最大里程强制停 */
@@ -325,6 +355,13 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                 if ((pd->race_lap_cm > 0.0f) &&
                     (traveled >= (pd->race_lap_cm - LINE_RACE_FALLBACK_CM)))
                 {
+                    pd->race_phase = 3U;
+                }
+                else if ((pd->race_lap_cm <= 0.0f) &&
+                         (s_learned_lap_cm > 0.0f) &&
+                         (traveled >= (s_learned_lap_cm - LINE_RACE_FALLBACK_CM)))
+                {
+                    /* 自适应模式：用上次学到的周长兜底（高速漏检时靠它） */
                     pd->race_phase = 3U;
                 }
                 else if ((pd->race_lap_cm <= 0.0f) &&

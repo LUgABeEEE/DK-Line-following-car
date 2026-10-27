@@ -39,7 +39,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "ac"
+#define BLE_BUILD_TAG   "ad"
 
 /*
  * UART 发送超时，单位 ms。
@@ -634,7 +634,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-27ac (built " __DATE__ " " __TIME__ ")\r\n");
+    BleTask_Print("[VER] line-follower 2025-10-27ad (built " __DATE__ " " __TIME__ ")\r\n");
     BleTask_Print("[BleTask] X=stop I=scan I2C\r\n");
 
     /* 同步一次连接状态，避免把"上电时已连接"误报成一次新连接 */
@@ -673,6 +673,22 @@ static void BleTask_Main(void *argument)
                 case 'i':
                     /* 扫描 I2C 总线，诊断灰度传感器通信问题 */
                     BleTask_ScanI2C();
+                    break;
+
+                case 'N':
+                case 'n':
+                    /*
+                     * 把 HC-05 的广播名改成 LFCar（只成功一次即可，模块自己存着）。
+                     * 前提：HC-05 处于 AT 模式（KEY/EN 在上电时为高）。
+                     */
+                    if (BLE_SetName("LFCar") != 0U)
+                    {
+                        BleTask_Print("[BLE] name set to LFCar\r\n");
+                    }
+                    else
+                    {
+                        BleTask_Print("[BLE] name set FAILED (need AT mode)\r\n");
+                    }
                     break;
 
 
@@ -798,7 +814,7 @@ static void BleTask_Main(void *argument)
                      * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
                      * 放在这里就能保证每次连接都能确认。
                      */
-                    BleTask_Print("[VER] line-follower 2025-10-27ac (built "
+                    BleTask_Print("[VER] line-follower 2025-10-27ad (built "
                                   __DATE__ " " __TIME__ ")\r\n");
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");
                 }

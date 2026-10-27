@@ -161,6 +161,9 @@ static SemaphoreHandle_t s_sem_key3 = NULL;
 /* 当前选中的参数编号 */
 static volatile uint8_t s_param_index = TUNE_IDX_KP;
 
+/* 1 = 下一轮强制重绘（跨任务请求切页时用） */
+static volatile uint8_t s_force_redraw = 0U;
+
 /* 累计接受过的按键次数（诊断用，确认没丢包） */
 static volatile uint32_t s_key1_total = 0U;
 static volatile uint32_t s_key2_total = 0U;
@@ -314,11 +317,13 @@ static void OledTask_WriteParam(uint8_t idx, float value)
     if (idx == TUNE_IDX_LBAS)
     {
         /*
-         * 基础速度。同时更新 g_speed_test_target，
-         * 这样从 LINE 切回 SPEED TEST 时两个速度是一致的，不会突然变速。
+         * 基础速度（只改循迹基础速度）。
+         *
+         * 以前这里同时写 g_speed_test_target，结果"调个 LBAS"就顺手把
+         * 速度测试模式的目标也改了——如果当时正好在 SPD 模式，车会自己
+         * 跑起来。现在两者彻底解耦：SPD 的速度只由 TARGET 参数控制。
          */
-        g_line_pd.base_speed  = value;
-        g_speed_test_target   = value;
+        g_line_pd.base_speed = value;
         return;
     }
 
@@ -428,7 +433,8 @@ uint8_t OledTask_IsModePage(void)
 
 void OledTask_SetModePage(void)
 {
-    s_param_index = TUNE_IDX_MODE;
+    s_param_index  = TUNE_IDX_MODE;
+    s_force_redraw = 1U;
 }
 
 float OledTask_GetParamValue(void)
@@ -861,13 +867,15 @@ static void OledTask_Main(void *argument)
          * 如果沿用"数值变化才刷"的策略，停车状态下画面会冻住，
          * 根本看不到探头被遮挡时的变化。
          */
-        if ((s_param_index == TUNE_IDX_SENSOR) ||
+        if ((s_force_redraw != 0U) ||
+            (s_param_index == TUNE_IDX_SENSOR) ||
             (s_param_index == TUNE_IDX_MODE) ||
             (old_index != s_param_index) ||
             (old_value != OledTask_ReadParam(s_param_index)) ||
             (g_ctrl_mode != CTRL_MODE_STOP))
         {
             OledTask_Draw();
+            s_force_redraw = 0U;
         }
 
         vTaskDelay(pdMS_TO_TICKS(OLED_TASK_PERIOD_MS));
