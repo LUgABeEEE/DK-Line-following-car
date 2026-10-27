@@ -43,6 +43,8 @@ add_executable(${CMAKE_PROJECT_NAME}
         Drivers/BSD/Inc/Gray.h
         Drivers/BSD/Src/LinePD.c
         Drivers/BSD/Inc/LinePD.h
+        Drivers/BSD/Src/MPU6050.c
+        Drivers/BSD/Inc/MPU6050.h
         Drivers/BSD/Src/Led.c
         Drivers/BSD/Inc/Led.h
         Drivers/BSD/Src/Key.c

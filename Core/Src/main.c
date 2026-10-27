@@ -29,6 +29,7 @@
 #include "Led.h"
 #include "Key.h"
 #include "Ble.h"
+#include "MPU6050.h"
 #include "Oled.h"
 #include "Ble_task.h"
 #include "Control_task.h"
@@ -203,6 +204,18 @@ int main(void)
   Led_Init();              /* 两盏 LED 全灭，清空闪烁状态 */
   Key_Init();              /* 三个按键采信当前电平作为初始稳定态 */
   BLE_Init();              /* KEY 拉低=透传模式，启动 USART2 字节中断接收 */
+
+  /*
+   * MPU6050（挂在 I2C2，和 OLED 同总线）。
+   *
+   * 必须在车静止时标定零偏：上电后到按下启动之前这段时间正好。
+   * 没接模块时 MPU6050_Init 返回 0，后续所有接口都安全空转，
+   * 不影响循迹。
+   */
+  if (MPU6050_Init(&hi2c2) != 0U)
+  {
+      (void)MPU6050_Calibrate(200U);   /* 200 × 2ms ≈ 0.4s */
+  }
 
 #if (BLE_AUTOCONFIG_ON_BOOT != 0)
   /*

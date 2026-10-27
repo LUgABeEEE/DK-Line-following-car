@@ -25,6 +25,7 @@
 #include "Oled.h"
 #include "Oled_task.h"
 #include "Ble_task.h"       /* BleTask_SendTag()：跑圈结果打标 */
+#include "MPU6050.h"        /* 陀螺仪：yaw 阻尼/定角转弯用 */
 
 extern Gray_Sensor_t g_gray;
 extern Line_PD_t     g_line_pd;
@@ -160,6 +161,9 @@ static void ControlTask_Main(void *argument)
 
         /* ================= 节拍 1：内环速度环，20ms ================= */
         Encoder_UpdateSpeed();
+
+        /* 陀螺仪：读角速度 + 积分航向（20ms 一拍，和速度环同频） */
+        MPU6050_Update();
 
         /*
          * ---- 传感器采样：每个 20ms 节拍都读 ----
