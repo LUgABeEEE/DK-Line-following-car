@@ -1412,9 +1412,10 @@ void LinePD_RaceStart(Line_PD_t *pd, float lap_cm)
     }
 
     /*
-     * LAP 语义：
+     * LAP 语义（OLED 步长是 10cm，所以自适应档留了一整段区间）：
      *   0        -> 关闭自动停车
-     *   1        -> 自适应模式：只靠启停线识别，不需要周长
+     *   1~49     -> 自适应模式：只靠启停线识别，不需要周长
+     *               （从 0 按一下就是 10，直接进入自适应）
      *   >= 50cm  -> 周长模式：识别为主，里程兜底
      */
     if (lap_cm <= 0.0f)
@@ -1422,7 +1423,7 @@ void LinePD_RaceStart(Line_PD_t *pd, float lap_cm)
         pd->race_enabled = 0U;
         pd->race_lap_cm  = 0.0f;
     }
-    else if (lap_cm < 2.0f)
+    else if (lap_cm < 50.0f)
     {
         pd->race_enabled = 1U;
         pd->race_lap_cm  = 0.0f;     /* 自适应：没有周长 */
