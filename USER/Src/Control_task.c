@@ -65,6 +65,19 @@ static uint8_t s_race_announced = 0U;
 static uint8_t s_race_last_phase = 0U;
 
 /*
+ * 是否允许打跑圈标记。
+ *
+ * 循迹中要打，停车后（自动停车/长按 KEY2/蓝牙急停）也要能补打：
+ *   STOP 模式下 MODE 页：短按 KEY1 = 失败，长按 KEY3 = 成功。
+ * 仍然要求停在 MODE 页，避免在调参页误触。
+ */
+static uint8_t ControlTask_TagAllowed(void)
+{
+    return ((g_ctrl_mode == CTRL_MODE_LINE_FOLLOW) ||
+            (g_ctrl_mode == CTRL_MODE_STOP)) ? 1U : 0U;
+}
+
+/*
  * 按键短按/长按判定。
  *
  *   PRESS       -> 清长按标志
@@ -347,7 +360,7 @@ if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
                     {
                         s_key_was_long[key]      = 0U;
                         s_key_press_eligible[key] =
-                            ((g_ctrl_mode == CTRL_MODE_LINE_FOLLOW) &&
+                            ((ControlTask_TagAllowed() != 0U) &&
                              (OledTask_IsModePage() != 0U)) ? 1U : 0U;
 
                         if ((key == KEY_1) || (key == KEY_2) || (key == KEY_3))
@@ -396,7 +409,7 @@ if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
                              * MODE 页）：按下瞬间 KEY3 会先切走页面，
                              * 打标后这里把它退回 MODE 页，方便看实时数据。
                              */
-                            if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
+                            if (ControlTask_TagAllowed() != 0U)
                             {
                                 (void)BleTask_SendTag(1U);
                             }

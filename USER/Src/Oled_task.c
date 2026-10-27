@@ -632,7 +632,11 @@ static void OledTask_DrawModePage(void)
     case CTRL_MODE_STOP:
     default:
         mode_str = "STOP";
-        hint     = "brake held";
+        /*
+         * 停车状态下也能补打标记（自动停车/急停之后）：
+         * 短按 KEY1 = 失败，长按 KEY3 = 成功。
+         */
+        hint = "K1 FAIL  K3H OK";
         break;
     }
 
