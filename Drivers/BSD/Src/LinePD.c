@@ -318,15 +318,16 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             if (gray->stop_bar_seen != 0U)
             {
                 /*
-                 * 判定：
-                 *   - 很短的脉冲（<=2 拍 = 40ms）即使有方向锁存也认，
-                 *     因为高速下识别窗口本来就只有 1~2 拍，再要求方向会漏；
-                 *   - 稍长的脉冲（3 拍）才要求"没有方向证据"，排除角点。
-                 * 横向误差放宽到 1.6cm（高速时车身偏一点也能认）。
+                 * 判定（宁漏不误）：
+                 *   - 必须【没有方向锁存】：真角点一定有 SIDE/FORK 方向，
+                 *     启停线只是短横线，方向保持 0；
+                 *   - 横向误差 <1.2cm；
+                 *   - 脉冲宽度由 Gray 限制在 <=3 拍（角点全黑会持续更久）。
+                 * 高速漏检由"学到的周长"兜底，不在弯道冒误停的风险。
                  */
-                if (((gray->stop_bar_len <= 2U) || (pd->corner_dir == 0)) &&
-                    (gray->position_cm > -1.6f) &&
-                    (gray->position_cm <  1.6f))
+                if ((pd->corner_dir == 0) &&
+                    (gray->position_cm > -LINE_RACE_DETECT_ERR_CM) &&
+                    (gray->position_cm <  LINE_RACE_DETECT_ERR_CM))
                 {
                     pd->race_phase     = 2U;
                     pd->race_detect_cm = traveled;
