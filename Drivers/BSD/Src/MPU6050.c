@@ -26,6 +26,7 @@
 static I2C_HandleTypeDef *s_hi2c = NULL;
 static uint16_t s_addr  = (uint16_t)(MPU6050_ADDR_7BIT_LOW << 1);  /* 8 位地址 */
 static uint8_t  s_ready = 0U;
+static uint8_t  s_whoami = 0U;
 static uint16_t s_faults = 0U;
 
 static float    s_bias_x = 0.0f;
@@ -118,10 +119,16 @@ static uint8_t MPU_ProbeAddress(void)
     {
         s_addr = cand[k];
 
-        if ((MPU_ReadRegs(MPU_REG_WHO_AM_I, &who, 1U) != 0U) &&
-            (who == MPU6050_WHO_AM_I_VAL))
+        if (MPU_ReadRegs(MPU_REG_WHO_AM_I, &who, 1U) != 0U)
         {
-            return 1U;
+            if ((who == MPU6050_WHO_AM_I_VAL) ||
+                (who == MPU6050_WHO_AM_I_6500) ||
+                (who == MPU6050_WHO_AM_I_6500B) ||
+                (who == MPU6050_WHO_AM_I_9250))
+            {
+                s_whoami = who;
+                return 1U;
+            }
         }
     }
 
@@ -308,6 +315,11 @@ float MPU6050_GetYawDeg(void)
 float MPU6050_GetBiasDps(void)
 {
     return s_bias_z;
+}
+
+uint8_t MPU6050_GetWhoAmI(void)
+{
+    return s_whoami;
 }
 
 uint16_t MPU6050_GetFaults(void)

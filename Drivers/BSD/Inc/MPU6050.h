@@ -29,7 +29,15 @@
  */
 #define MPU6050_ADDR_7BIT_LOW   0x68U
 #define MPU6050_ADDR_7BIT_HIGH  0x69U
+/*
+ * WHO_AM_I 允许值。
+ * 市面上大量"MPU6050"实际是 MPU6500/9250 克隆片，ID 是 0x70/0x71/0x73；
+ * 寄存器映射对陀螺部分兼容，所以这些 ID 也接受。
+ */
 #define MPU6050_WHO_AM_I_VAL    0x68U
+#define MPU6050_WHO_AM_I_6500   0x70U
+#define MPU6050_WHO_AM_I_6500B  0x71U
+#define MPU6050_WHO_AM_I_9250   0x73U
 
 /* yaw 轴映射：X 朝前、Z 竖直 -> 用 Z 轴，左转为正 */
 #define MPU6050_YAW_AXIS        2U
@@ -70,6 +78,7 @@ float    MPU6050_GetYawRateDps(void);   /* 当前偏航角速度，左正右负 
 float    MPU6050_GetYawDeg(void);       /* 累计航向角，度；左正右负 */
 float    MPU6050_GetBiasDps(void);      /* 标定得到的 Z 轴零偏 */
 uint16_t MPU6050_GetFaults(void);       /* 累计 I2C 失败次数 */
+uint8_t  MPU6050_GetWhoAmI(void);       /* 实际读到的 WHO_AM_I（诊断用） */
 void     MPU6050_ResetYaw(float deg);   /* 把航向角清零/置为指定值 */
 
 #endif /* MPU6050_H */
