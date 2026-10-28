@@ -637,7 +637,7 @@ static void OledTask_DrawModePage(void)
          * 停车状态下也能补打标记（自动停车/急停之后）：
          * 短按 KEY1 = 失败，长按 KEY3 = 成功。
          */
-        hint = "K1 FAIL  K3H OK";
+        hint = "K2:LINE K1H:SPD";
         break;
     }
 
@@ -853,10 +853,25 @@ static void OledTask_Main(void *argument)
             }
             else
             {
-                float step = s_params[s_param_index].step;
-                float delta = (float)k2n * step - (float)k1n * step;
+                float step   = s_params[s_param_index].step;
+                float delta  = (float)k2n * step - (float)k1n * step;
+                float target = old_value + delta;
 
-                OledTask_WriteParam(s_param_index, old_value + delta);
+                /*
+                 * 模式页：STOP 状态下按 KEY2 直接进 LINE（跳过 SPD）。
+                 *
+                 * 以前 STOP -> SPD -> LINE 要按两下，误按一下车就在
+                 * SPEED_TEST 里直着冲出去（实测发生过三次"直角冲出道"）。
+                 * SPD 改为长按 KEY1 进入（Control_task 处理）。
+                 */
+                if ((s_param_index == TUNE_IDX_MODE) &&
+                    (g_ctrl_mode == CTRL_MODE_STOP) &&
+                    (k2n > 0U))
+                {
+                    target = (float)CTRL_MODE_LINE_FOLLOW;
+                }
+
+                OledTask_WriteParam(s_param_index, target);
             }
         }
 

@@ -415,7 +415,20 @@ if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
                     {
                         s_key_was_long[key] = 1U;
 
-                        if (key == KEY_2)
+                        if (key == KEY_1)
+                        {
+                            /*
+                             * 长按 KEY1：在 STOP + MODE 页时进入 SPD（速度测试）。
+                             * KEY2 短按已经改成"直接进 LINE"，SPD 挪到这里，
+                             * 避免循迹前误进速度测试。
+                             */
+                            if ((g_ctrl_mode == CTRL_MODE_STOP) &&
+                                (OledTask_IsModePage() != 0U))
+                            {
+                                g_ctrl_mode = CTRL_MODE_SPEED_TEST;
+                            }
+                        }
+                        else if (key == KEY_2)
                         {
                             /*
                              * 长按 KEY2：急停（硬制动）。
