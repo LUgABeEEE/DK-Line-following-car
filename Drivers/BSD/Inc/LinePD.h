@@ -277,7 +277,7 @@
 #define LINE_PD_DFLT_BASE_SPEED     50.0f
 #define LINE_STRAIGHT_TICKS         5U
 #define LINE_STRAIGHT_BOOST_MAX     0.25f
-#define LINE_CORNER_SLOW_MAX        0.72f
+#define LINE_CORNER_SLOW_MAX        0.62f   /* 弧线限速：直道快、弧线慢 */
 #define LINE_LEAD_WEIGHT            0.70f
 #define LINE_DOWN_RAMP_MULT         2.0f
 #endif
@@ -311,7 +311,7 @@
  * 量化传感器不划算，噪声占比太高；先关掉，只保留位置低通 + yaw 阻尼）。
  * 需要重新启用时改为 0.8，并按死区/斜坡/限幅一起观察。
  */
-#define LINE_THETA_FF_GAIN          0.70f   /* 前馈增益（× v × θ），0=关 */
+#define LINE_THETA_FF_GAIN          0.90f   /* 前馈增益（× v × θ），0=关 */
 #define LINE_THETA_MAX_RAD          0.70f   /* θ 限幅（约 40°） */
 #define LINE_THETA_LPF              0.50f   /* θ 低通系数 */
 #define LINE_POS_LPF_ALPHA          0.50f   /* 位置低通系数 */
