@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "an"
+#define BLE_BUILD_TAG   "ao"
 
 /*
  * UART 发送超时，单位 ms。
@@ -635,7 +635,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-28an P%d (built " __DATE__ " " __TIME__ ")\r\n",
+    BleTask_Print("[VER] line-follower 2025-10-28ao P%d (built " __DATE__ " " __TIME__ ")\r\n",
                   (int)LINE_SIMPLE_PROFILE);
     BleTask_Print("[BleTask] X=stop I=scan I2C N=name\r\n");
 
@@ -727,7 +727,9 @@ static void BleTask_Main(void *argument)
                 if (tag == 2U)
                 {
                     /* 自动停车：识别到启停线（控制任务只入队，不阻塞串口） */
-                    BleTask_Print("[RACE] det t%lu\r\n",
+                    BleTask_Print("[RACE] det d%u lrn%u t%lu\r\n",
+                                  (unsigned int)(g_line_pd.race_detect_cm - g_line_pd.race_start_cm),
+                                  (unsigned int)LinePD_RaceLearnedLapCm(),
                                   (unsigned long)HAL_GetTick());
                 }
                 else if (tag == 3U)
@@ -820,13 +822,14 @@ static void BleTask_Main(void *argument)
             {
                 s_diag_tick = HAL_GetTick();
 
-                BleTask_Print("[M] heap%u stkC%u stkO%u stkB%u i2c%u/%u\r\n",
+                BleTask_Print("[M] heap%u stkC%u stkO%u stkB%u i2c%u/%u lrn%u\r\n",
                               (unsigned int)xPortGetFreeHeapSize(),
                               (unsigned int)(ControlTask_GetStackFreeWords() * 4U),
                               (unsigned int)(OledTask_GetStackFreeWords() * 4U),
                               (unsigned int)(BleTask_GetStackFreeWords() * 4U),
                               (unsigned int)g_gray.total_fails,
-                              (unsigned int)g_gray.total_reads);
+                              (unsigned int)g_gray.total_reads,
+                              (unsigned int)LinePD_RaceLearnedLapCm());
             }
         }
 
@@ -851,7 +854,7 @@ static void BleTask_Main(void *argument)
                      * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
                      * 放在这里就能保证每次连接都能确认。
                      */
-                    BleTask_Print("[VER] line-follower 2025-10-28an P%d (built "
+                    BleTask_Print("[VER] line-follower 2025-10-28ao P%d (built "
                                   __DATE__ " " __TIME__ ")\r\n",
                                   (int)LINE_SIMPLE_PROFILE);
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");

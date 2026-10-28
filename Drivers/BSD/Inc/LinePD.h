@@ -384,6 +384,18 @@
  *   为了防止"一直识别不到"跑飞，跑过 LINE_RACE_MAX_CM 强制停车。
  */
 #define LINE_RACE_ARM_MIN_CM        120.0f  /* 自适应模式的武装距离 */
+
+/*
+ * 自适应模式下"多早算太早"。
+ *
+ * 实测教训：在弯道/接缝处误识别一次启停线，会把"周长"学成 1.3~1.8m，
+ * 之后每一圈都按这个错误周长兜底停车——表现就是"每次只跑一小段就停"。
+ * 所以：
+ *   - 自适应模式里，识别点里程 < LINE_RACE_LEARN_MIN_CM 的一律不认；
+ *   - 学习周长也必须 >= 这个值。
+ * 赛道整圈一般 > 3m，取 200cm 留足余量。
+ */
+#define LINE_RACE_LEARN_MIN_CM      200.0f
 #define LINE_RACE_MAX_CM            2000.0f /* 自适应模式的安全上限 */
 
 /* 编译期默认增益 */
@@ -1005,6 +1017,9 @@ void LinePD_SetGains(Line_PD_t *pd, float kp, float kd, float base_speed);
 void    LinePD_RaceStart(Line_PD_t *pd, float lap_cm);
 void    LinePD_RaceCancel(Line_PD_t *pd);
 uint8_t LinePD_RaceDone(const Line_PD_t *pd);
+
+/* 自适应模式学到的周长（cm），0 = 还没学到；只用于诊断输出 */
+float   LinePD_RaceLearnedLapCm(void);
 uint8_t LinePD_RacePhase(const Line_PD_t *pd);
 
 /*

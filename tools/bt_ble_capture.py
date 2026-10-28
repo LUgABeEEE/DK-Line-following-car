@@ -80,7 +80,25 @@ async def run(args) -> int:
         print(f"[ble] 找到 {dev.address} ({dev.name})，连接…")
         try:
             async with BleakClient(dev.address, timeout=20.0) as client:
-                await client.start_notify(FFE1, on_notify)
+                # 订阅所有支持 notify/indicate 的特征（不同 BLE 串口模块用的 UUID 不同：
+                # HM-10 是 FFE1，有些模块是 FFE2，这里不写死）
+                subscribed = 0
+                for service in client.services:
+                    for ch in service.characteristics:
+                        props = ch.properties or []
+                        if ("notify" in props) or ("indicate" in props):
+                            try:
+                                await client.start_notify(ch.uuid, on_notify)
+                                print(f"[ble] 订阅 {ch.uuid} {props}")
+                                subscribed += 1
+                            except Exception as e:
+                                print(f"[ble] 订阅 {ch.uuid} 失败：{e}")
+
+                if subscribed == 0:
+                    print("[ble] 没有找到 notify 特征，断开重试")
+                    await client.disconnect()
+                    await asyncio.sleep(2.0)
+                    continue
                 print("[ble] 已连接，开始采集（Ctrl-C 结束）")
                 while True:
                     await asyncio.sleep(1.0)
