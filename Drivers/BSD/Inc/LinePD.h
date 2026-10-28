@@ -274,7 +274,7 @@
 
 #else
 /* 均衡（默认；非法值也落到这一档） */
-#define LINE_PD_DFLT_BASE_SPEED     30.0f
+#define LINE_PD_DFLT_BASE_SPEED     50.0f
 #define LINE_STRAIGHT_TICKS         5U
 #define LINE_STRAIGHT_BOOST_MAX     0.25f
 #define LINE_CORNER_SLOW_MAX        0.72f
@@ -428,7 +428,7 @@
  *   配合 LINE_DIFF_LIMIT = 35 时，e 超过 1.75cm 就进入满幅，
  *   相当于"小误差线性、大误差饱和"，对循迹反而很合适。
  */
-#define LINE_PD_DFLT_KP             20.0f
+#define LINE_PD_DFLT_KP             12.0f
 /*
  * 外环微分增益，单位 cm/s 差速量 每 (cm/s) 误差变化率。
  *
@@ -448,7 +448,7 @@
  *     周期改成 20ms（dt 变小）          -> 同样的 KD 变得更凶，必须调小
  *   改外环周期后如果出现抖动，第一个要怀疑的就是 KD。
  */
-#define LINE_PD_DFLT_KD             1.0f
+#define LINE_PD_DFLT_KD             1.2f
 
 /*
  * 基础速度由上面的「赛道档位」决定（LINE_SIMPLE_PROFILE）：
