@@ -512,7 +512,7 @@ uint8_t BLE_AutoConfig(void)
         HAL_Delay(20U);
 
         if ((BLE_SendAT("AT+VERSION", resp, sizeof(resp)) != 0U) &&
-            (strstr(resp, "JDY-31") != NULL))
+            (strstr(resp, "JDY") != NULL))
         {
             s_module_type = BLE_MODULE_JDY31;
             detected = 1U;
@@ -587,6 +587,12 @@ uint8_t BLE_AutoConfig(void)
 
     if (s_module_type == BLE_MODULE_JDY31)
     {
+        /*
+         * JDY-31 固定 9600：AT+BAUD4 是幂等的（本来就是 9600 也无害）。
+         * 这样即使模块被改过速率/复位，也保证双方一致。
+         */
+        (void)BLE_SendAT("AT+BAUD4", resp, sizeof(resp));
+
         /* JDY-31：AT+NAME<name> / AT+PIN<4位> / AT+ENLOG<0|1> */
         (void)BLE_SendAT("AT+NAMELFCar", resp, sizeof(resp));
         (void)BLE_SendAT("AT+PIN1234",  resp, sizeof(resp));
