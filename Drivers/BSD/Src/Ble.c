@@ -486,6 +486,76 @@ uint8_t BLE_SetBaud(uint32_t baud)
  */
 uint8_t BLE_AutoConfig(void)
 {
+#if (BLE_MODULE_FORCE_JDY31 != 0)
+    /*
+     * JDY-31 专用流程（固定 9600）：
+     *   1) 在 9600/38400/115200 里找模块（发 AT+VERSION，能回就说明在 AT 模式）；
+     *   2) 发 AT+BAUD4 把它设成 9600，等复位/生效后 MCU 也切 9600；
+     *   3) 发 AT+NAMELFCar / AT+PIN1234 / AT+ENLOG0（JDY 格式，无 '='）。
+     */
+    static const uint32_t bauds[3] = { 9600U, 38400U, 115200U };
+    char     resp[BLE_LINE_BUFFER_SIZE];
+    uint8_t  found = 0U;
+    uint32_t found_baud = 9600U;
+    uint32_t i;
+
+    s_module_type = BLE_MODULE_JDY31;
+
+    for (i = 0U; i < 3U; i++)
+    {
+        if (BLE_SetBaudInternal(bauds[i]) == 0U)
+        {
+            continue;
+        }
+
+        BLE_FlushRx();
+        HAL_Delay(20U);
+
+        if ((BLE_SendAT("AT+VERSION", resp, sizeof(resp)) != 0U) &&
+            (strstr(resp, "VERSION") != NULL))
+        {
+            found = 1U;
+            found_baud = bauds[i];
+            break;
+        }
+    }
+
+    if (found == 0U)
+    {
+        s_cfg_ok = 0U;
+        (void)BLE_SetBaudInternal(9600U);
+        return 0U;
+    }
+
+    if (found_baud != 9600U)
+    {
+        char chk[BLE_LINE_BUFFER_SIZE];
+
+        (void)BLE_SendAT("AT+BAUD4", chk, sizeof(chk));   /* 4 = 9600 */
+        (void)BLE_SendAT("AT+RESET", chk, sizeof(chk));
+        HAL_Delay(400U);
+        (void)BLE_SetBaudInternal(9600U);
+        BLE_FlushRx();
+        HAL_Delay(30U);
+
+        if ((BLE_SendAT("AT+VERSION", chk, sizeof(chk)) == 0U) ||
+            (strstr(chk, "VERSION") == NULL))
+        {
+            /* 没切成：退回找到的波特率，至少链路可用 */
+            (void)BLE_SetBaudInternal(found_baud);
+        }
+    }
+
+    (void)BLE_SendAT("AT+BAUD4",    resp, sizeof(resp));  /* 幂等，确保 9600 */
+    (void)BLE_SendAT("AT+NAMELFCar", resp, sizeof(resp));
+    (void)BLE_SendAT("AT+PIN1234",   resp, sizeof(resp));
+    (void)BLE_SendAT("AT+ENLOG0",    resp, sizeof(resp));
+
+    BLE_FlushRx();
+    HAL_Delay(20U);
+    s_cfg_ok = 1U;
+    return 1U;
+#else
     static const uint32_t bauds[3] = { 9600U, 38400U, 115200U };
     char     resp[BLE_LINE_BUFFER_SIZE];
     uint8_t  detected = 0U;
@@ -621,6 +691,7 @@ uint8_t BLE_AutoConfig(void)
     HAL_Delay(20U);
     s_cfg_ok = 1U;
     return 1U;
+#endif /* BLE_MODULE_FORCE_JDY31 */
 }
 
 uint8_t BLE_SetName(const char *name)

@@ -153,6 +153,18 @@ uint8_t BLE_SetBaud(uint32_t baud);
 /* 设置广播名（最长 32 字节）。 */
 uint8_t BLE_SetName(const char *name);
 
+/*
+ * 强制按 JDY-31 处理（当前车上用的就是 JDY-31）。
+ *
+ * 自动识别不可靠：AT+VERSION 有时不回（模块刚上电/已连接），
+ * 会被误判成 HC-05，然后用 HC-05 的 AT+NAME=... 把名字写成 "=LFCar"，
+ * 而且 AT+UART=9600 对 JDY 无效 -> 波特率没切成 9600。
+ *
+ * 置 1 后：不再猜型号，固定按 JDY-31 的指令集配置，并强制 9600。
+ * 以后换回 HC-05 时把它改成 0。
+ */
+#define BLE_MODULE_FORCE_JDY31      1
+
 /* 上电是否自动配置模块（从机 + 名字 LFCar + 配对码 1234）。1=开启 */
 #define BLE_AUTOCONFIG_ON_BOOT      1
 
