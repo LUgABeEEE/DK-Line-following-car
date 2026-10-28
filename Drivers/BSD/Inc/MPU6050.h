@@ -41,7 +41,12 @@
 
 /* yaw 轴映射：X 朝前、Z 竖直 -> 用 Z 轴，左转为正 */
 #define MPU6050_YAW_AXIS        2U
-#define MPU6050_YAW_SIGN        (+1.0f)
+/*
+ * yaw 符号：左转为正。
+ * 2026-10-28 实测：手转车身向左时 gyro Z 读数为负（[I] g-12），
+ * 说明模块的 Z 轴朝向与约定相反，因此这里取 -1。
+ */
+#define MPU6050_YAW_SIGN        (-1.0f)
 
 /*
  * 400kHz 探测失败时是否允许降到 100kHz 重试。

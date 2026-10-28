@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "aw"
+#define BLE_BUILD_TAG   "ax"
 
 /*
  * UART 发送超时，单位 ms。
@@ -655,7 +655,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-28aw P%d (built " __DATE__ " " __TIME__ ")\r\n",
+    BleTask_Print("[VER] line-follower 2025-10-28ax P%d (built " __DATE__ " " __TIME__ ")\r\n",
                   (int)LINE_SIMPLE_PROFILE);
     BleTask_Print("[BleTask] X=stop I=scan I2C N=name\r\n");
 
@@ -709,6 +709,33 @@ static void BleTask_Main(void *argument)
                 case 'i':
                     /* 扫描 I2C 总线，诊断灰度传感器通信问题 */
                     BleTask_ScanI2C();
+                    break;
+
+                case 'Z':
+                case 'z':
+                    /*
+                     * 静止重新标定零偏。
+                     * 上电标定时车可能在被人拿着/移动，零偏会标错，
+                     * 表现为停车时 [I] 的 y 一直漂。发 Z 之前让车完全静止。
+                     */
+                    if (g_ctrl_mode != CTRL_MODE_STOP)
+                    {
+                        BleTask_Print("[IMU] recal ignored (not STOP)\r\n");
+                    }
+                    else if (MPU6050_IsReady() == 0U)
+                    {
+                        BleTask_Print("[IMU] recal skipped (no IMU)\r\n");
+                    }
+                    else if (MPU6050_Calibrate(400U) != 0U)
+                    {
+                        MPU6050_ResetYaw(0.0f);
+                        BleTask_Print("[IMU] recal ok biasZ=%+d (0.1dps)\r\n",
+                                      (int)(MPU6050_GetBiasDps() * 10.0f));
+                    }
+                    else
+                    {
+                        BleTask_Print("[IMU] recal FAILED\r\n");
+                    }
                     break;
 
                 case 'N':
@@ -881,7 +908,7 @@ static void BleTask_Main(void *argument)
                      * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
                      * 放在这里就能保证每次连接都能确认。
                      */
-                    BleTask_Print("[VER] line-follower 2025-10-28aw P%d (built "
+                    BleTask_Print("[VER] line-follower 2025-10-28ax P%d (built "
                                   __DATE__ " " __TIME__ ")\r\n",
                                   (int)LINE_SIMPLE_PROFILE);
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");
