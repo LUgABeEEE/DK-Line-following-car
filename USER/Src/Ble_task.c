@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "av"
+#define BLE_BUILD_TAG   "aw"
 
 /*
  * UART 发送超时，单位 ms。
@@ -655,7 +655,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-28av P%d (built " __DATE__ " " __TIME__ ")\r\n",
+    BleTask_Print("[VER] line-follower 2025-10-28aw P%d (built " __DATE__ " " __TIME__ ")\r\n",
                   (int)LINE_SIMPLE_PROFILE);
     BleTask_Print("[BleTask] X=stop I=scan I2C N=name\r\n");
 
@@ -817,7 +817,8 @@ static void BleTask_Main(void *argument)
                 {
                     s_imu_tick = HAL_GetTick();
 
-                    BleTask_Print("[I] y%+d g%+d b%+d f%u\r\n",
+                    BleTask_Print("[I] id0x%02X y%+d g%+d b%+d f%u\r\n",
+                                  (unsigned int)MPU6050_GetWhoAmI(),
                                   (int)MPU6050_GetYawDeg(),
                                   (int)MPU6050_GetYawRateDps(),
                                   (int)(MPU6050_GetBiasDps() * 10.0f),
@@ -880,7 +881,7 @@ static void BleTask_Main(void *argument)
                      * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
                      * 放在这里就能保证每次连接都能确认。
                      */
-                    BleTask_Print("[VER] line-follower 2025-10-28av P%d (built "
+                    BleTask_Print("[VER] line-follower 2025-10-28aw P%d (built "
                                   __DATE__ " " __TIME__ ")\r\n",
                                   (int)LINE_SIMPLE_PROFILE);
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");
