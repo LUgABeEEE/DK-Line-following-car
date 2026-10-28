@@ -594,6 +594,12 @@
 #define LINE_ALL_CONFIRM_CYCLES     2U
 
 /*
+ * ALL（8 路全黑）+ 已有方向时，即使没进角点事件也满舵转向。
+ * 全黑时位置解算失效（e≈0），不接管的话车会按直道全速冲出弯。
+ */
+#define LINE_ALL_ASSIST_CYCLES      2U
+
+/*
  * ---- 角点事件：SIDE（直角）与 FORK（锐角）合并处理 ----
  *
  * 【为什么不再按直角 / 锐角分开处理】

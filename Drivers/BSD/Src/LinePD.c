@@ -511,43 +511,16 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             if ((pos > -LINE_CORNER_TRIGGER_ERR_CM) &&
                 (pos <  LINE_CORNER_TRIGGER_ERR_CM))
             {
+                /*
+                 * 只取消"触发角点事件"，但【保留方向证据】。
+                 *
+                 * 实测：真 90° 角点处 SIDE 出现时 |e| 只有 1.2cm，
+                 * 如果连方向一起丢掉，随后 ALL（全黑、e≈0）到来时
+                 * 没有方向可用，车会按直道处理、全速冲出赛道。
+                 */
                 is_corner = 0U;
-                evidence  = 0;
-                src       = 0U;
             }
         }
-
-        if (is_corner != 0U)
-        {
-            if (pd->corner_confirm < 0xFFU)
-            {
-                pd->corner_confirm++;
-            }
-
-            /*
-             * 新事件开始：先清掉上一段的方向，再采纳本帧证据。
-             * （corner_dir_hold 不清 —— 它是给"出弯后立刻丢线"兜底用的）
-             */
-            if ((pd->corner_active == 0U) &&
-                (pd->corner_confirm >= LINE_CORNER_CONFIRM_CYCLES))
-            {
-                /*
-                 * 注意：这里【不再清零】corner_dir。
-                 * 窄/短赛道的事件会被频繁重建，每次清零就等于每 200ms
-                 * 重新投票一次方向，方向必然乱跳（实测 cd 0.19s 翻一次）。
-                 * 现在沿用上一段方向，翻向交给下面的迟滞逻辑。
-                 */
-                pd->corner_dir_alt = 0U;
-                pd->corner_acute   = 0U;
-                pd->corner_active  = 1U;
-                pd->corner_release = 0U;
-
-                /* 方案 C：记下"入弯时的车头朝向"，后面按 yaw 增量做定角转弯 */
-                pd->corner_yaw0    = pd->yaw_deg;
-                pd->commit_active  = 0U;
-                pd->commit_done    = 0U;
-                pd->last_commit_turn = 0.0f;
-            }
 
             /*
              * 方向锁存 + 优先级。
@@ -607,6 +580,39 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                 /* 只要这一拍还有方向证据，就把"出弯后记忆"续上 */
                 pd->corner_dir_hold = LINE_CORNER_DIR_HOLD_CYCLES;
             }
+
+        if (is_corner != 0U)
+        {
+            if (pd->corner_confirm < 0xFFU)
+            {
+                pd->corner_confirm++;
+            }
+
+            /*
+             * 新事件开始：先清掉上一段的方向，再采纳本帧证据。
+             * （corner_dir_hold 不清 —— 它是给"出弯后立刻丢线"兜底用的）
+             */
+            if ((pd->corner_active == 0U) &&
+                (pd->corner_confirm >= LINE_CORNER_CONFIRM_CYCLES))
+            {
+                /*
+                 * 注意：这里【不再清零】corner_dir。
+                 * 窄/短赛道的事件会被频繁重建，每次清零就等于每 200ms
+                 * 重新投票一次方向，方向必然乱跳（实测 cd 0.19s 翻一次）。
+                 * 现在沿用上一段方向，翻向交给下面的迟滞逻辑。
+                 */
+                pd->corner_dir_alt = 0U;
+                pd->corner_acute   = 0U;
+                pd->corner_active  = 1U;
+                pd->corner_release = 0U;
+
+                /* 方案 C：记下"入弯时的车头朝向"，后面按 yaw 增量做定角转弯 */
+                pd->corner_yaw0    = pd->yaw_deg;
+                pd->commit_active  = 0U;
+                pd->commit_done    = 0U;
+                pd->last_commit_turn = 0.0f;
+            }
+
 
             /*
              * 锐角证据：FORK（两条腿同时可见）或 ALL（整片全黑）。
@@ -680,7 +686,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 
     assist = 0U;
 #if (LINE_ALL_AS_CORNER != 0)
-    if ((pd->corner_active != 0U) &&
+    if (((pd->corner_active != 0U) || (pd->all_count >= LINE_ALL_ASSIST_CYCLES)) &&
         (gray->scene == GRAY_SCENE_ALL) &&
         (pd->corner_dir != 0))
     {
