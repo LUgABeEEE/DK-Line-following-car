@@ -99,10 +99,37 @@ static float MPU_PickYawAxis(int16_t gx, int16_t gy, int16_t gz)
 /* ------------------------------------------------------------------------- */
 /* 初始化和标定                                                                */
 /* ------------------------------------------------------------------------- */
+/*
+ * 在当前 I2C 速率下探测地址：
+ *   AD0 接 GND = 0x68，接 VCC = 0x69；WHO_AM_I 固定 0x68，与地址无关。
+ * 返回 1 = 找到并已设置 s_addr。
+ */
+static uint8_t MPU_ProbeAddress(void)
+{
+    static const uint8_t cand[2] =
+    {
+        (uint8_t)(MPU6050_ADDR_7BIT_LOW  << 1),
+        (uint8_t)(MPU6050_ADDR_7BIT_HIGH << 1)
+    };
+    uint8_t who = 0U;
+    uint8_t k;
+
+    for (k = 0U; k < 2U; k++)
+    {
+        s_addr = cand[k];
+
+        if ((MPU_ReadRegs(MPU_REG_WHO_AM_I, &who, 1U) != 0U) &&
+            (who == MPU6050_WHO_AM_I_VAL))
+        {
+            return 1U;
+        }
+    }
+
+    return 0U;
+}
+
 uint8_t MPU6050_Init(I2C_HandleTypeDef *hi2c)
 {
-    uint8_t who = 0U;
-
     if (hi2c == NULL)
     {
         return 0U;
@@ -117,32 +144,36 @@ uint8_t MPU6050_Init(I2C_HandleTypeDef *hi2c)
     /* 模块上电需要几十毫秒稳定 */
     HAL_Delay(30U);
 
-    /*
-     * 自动探测地址：AD0 接 GND = 0x68，接 VCC = 0x69。
-     * WHO_AM_I 固定返回 0x68，与地址无关，所以按响应来选。
-     */
+    if (MPU_ProbeAddress() == 0U)
     {
-        static const uint8_t cand[2] =
+        /*
+         * 400kHz 探不到时降到 100kHz 再试一次。
+         *
+         * 杜邦线长、模块上拉电阻弱、与 OLED 共总线时，400kHz 很容易失败；
+         * 这种"线材问题"在 100kHz 下往往就正常了。降速只影响刷新速度，
+         * 不影响控制（IMU 本身 20ms 读一次）。
+         */
+        if (hi2c->Init.ClockSpeed > 100000U)
         {
-            (uint8_t)(MPU6050_ADDR_7BIT_LOW  << 1),
-            (uint8_t)(MPU6050_ADDR_7BIT_HIGH << 1)
-        };
-        uint8_t found = 0U;
-        uint8_t k;
+            uint32_t old_speed = hi2c->Init.ClockSpeed;
 
-        for (k = 0U; k < 2U; k++)
-        {
-            s_addr = cand[k];
+            hi2c->Init.ClockSpeed = 100000U;
+            (void)HAL_I2C_Init(hi2c);
+            HAL_Delay(5U);
 
-            if ((MPU_ReadRegs(MPU_REG_WHO_AM_I, &who, 1U) != 0U) &&
-                (who == MPU6050_WHO_AM_I_VAL))
+            if (MPU_ProbeAddress() != 0U)
             {
-                found = 1U;
-                break;
+                /* 保持 100kHz：OLED 会稍慢，但 IMU 能用了 */
+            }
+            else
+            {
+                /* 还是找不到：恢复原速率，按"没接模块"处理 */
+                hi2c->Init.ClockSpeed = old_speed;
+                (void)HAL_I2C_Init(hi2c);
+                return 0U;
             }
         }
-
-        if (found == 0U)
+        else
         {
             return 0U;
         }
