@@ -489,6 +489,7 @@ uint8_t BLE_AutoConfig(void)
     static const uint32_t bauds[3] = { 9600U, 38400U, 115200U };
     char     resp[BLE_LINE_BUFFER_SIZE];
     uint8_t  detected = 0U;
+    uint32_t used_baud = 9600U;
     uint32_t i;
 
     /*
@@ -515,6 +516,7 @@ uint8_t BLE_AutoConfig(void)
         {
             s_module_type = BLE_MODULE_JDY31;
             detected = 1U;
+            used_baud = bauds[i];
             break;
         }
 
@@ -523,6 +525,7 @@ uint8_t BLE_AutoConfig(void)
         {
             s_module_type = BLE_MODULE_HC05;
             detected = 1U;
+            used_baud = bauds[i];
             break;
         }
     }
@@ -534,6 +537,54 @@ uint8_t BLE_AutoConfig(void)
         return 0U;
     }
 
+    if (s_module_type == BLE_MODULE_HC05)
+    {
+        /* HC-05 的参数要先进 AT 模式才能改 */
+        BLE_EnterATMode();
+    }
+
+    /*
+     * 统一波特率到 9600。
+     *
+     * 背景：模块被电机干扰复位后会回到出厂 9600，而固件还停在识别到的
+     * 38400/115200，双方失配 -> "蓝牙连得上但一个字节都没有"。
+     * 这里识别成功后主动把模块改回 9600，之后双方永远一致。
+     *
+     * 改完立刻用 AT 验证；改不动（比如命令不被支持）就回退到原速率，
+     * 保证不会把链路弄死。
+     */
+    if (used_baud != 9600U)
+    {
+        char chk[BLE_LINE_BUFFER_SIZE];
+
+        if (s_module_type == BLE_MODULE_JDY31)
+        {
+            (void)BLE_SendAT("AT+BAUD4", chk, sizeof(chk));   /* 4 = 9600 */
+            (void)BLE_SendAT("AT+RESET", chk, sizeof(chk));
+        }
+        else
+        {
+            (void)BLE_SendAT("AT+UART=9600,0,0", chk, sizeof(chk));
+            (void)BLE_SendAT("AT+RESET", chk, sizeof(chk));
+        }
+
+        HAL_Delay(400U);
+        (void)BLE_SetBaudInternal(9600U);
+        BLE_FlushRx();
+        HAL_Delay(30U);
+
+        if ((BLE_SendAT("AT", chk, sizeof(chk)) != 0U) &&
+            (strstr(chk, "OK") != NULL))
+        {
+            used_baud = 9600U;      /* 改成功 */
+        }
+        else
+        {
+            /* 改不动：回到识别到的速率，链路保持可用 */
+            (void)BLE_SetBaudInternal(used_baud);
+        }
+    }
+
     if (s_module_type == BLE_MODULE_JDY31)
     {
         /* JDY-31：AT+NAME<name> / AT+PIN<4位> / AT+ENLOG<0|1> */
@@ -543,8 +594,7 @@ uint8_t BLE_AutoConfig(void)
     }
     else
     {
-        /* HC-05：AT 模式靠 KEY 引脚，参数用 = 形式 */
-        BLE_EnterATMode();
+        /* HC-05：AT 模式已在上面进入，参数用 = 形式 */
         (void)BLE_SendAT("AT+ROLE=0",    resp, sizeof(resp));
         (void)BLE_SendAT("AT+NAME=LFCar", resp, sizeof(resp));
         (void)BLE_SendAT("AT+PSWD=1234",  resp, sizeof(resp));
