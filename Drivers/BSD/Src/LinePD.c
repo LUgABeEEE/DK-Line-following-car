@@ -1071,6 +1071,15 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         slow_factor *= (1.0f + pd->speed_boost);
 
         /*
+         * 丢线降速：进入搜索前（lost_count 1~容差）先减速，
+         * 给车时间冲过断口/遮挡，也避免高速丢线直接甩出去。
+         */
+        if (pd->lost_count > 0U)
+        {
+            slow_factor *= LINE_LOST_SLOW_FACTOR;
+        }
+
+        /*
          * 基础速度带斜坡。
          *
          * 目标值 = base_speed × 速度系数（弯道减速 × 直道加速）；

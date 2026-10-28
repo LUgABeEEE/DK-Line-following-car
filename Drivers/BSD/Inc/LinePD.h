@@ -311,7 +311,7 @@
  * 量化传感器不划算，噪声占比太高；先关掉，只保留位置低通 + yaw 阻尼）。
  * 需要重新启用时改为 0.8，并按死区/斜坡/限幅一起观察。
  */
-#define LINE_THETA_FF_GAIN          0.50f   /* 前馈增益（× v × θ），0=关 */
+#define LINE_THETA_FF_GAIN          0.70f   /* 前馈增益（× v × θ），0=关 */
 #define LINE_THETA_MAX_RAD          0.70f   /* θ 限幅（约 40°） */
 #define LINE_THETA_LPF              0.50f   /* θ 低通系数 */
 #define LINE_POS_LPF_ALPHA          0.50f   /* 位置低通系数 */
@@ -902,6 +902,12 @@
  * 短暂丢线先用正常 PD/惯性冲过去，真丢了再找。
  */
 #define LINE_LOST_TOLERANCE         5U
+
+/*
+ * 一丢线（还没进入搜索）就把目标速度打这个折扣。
+ * 半圆弧上偶尔有短暂看不到线的地方，降速能提高冲过去/重新咬住线的概率。
+ */
+#define LINE_LOST_SLOW_FACTOR       0.70f
 
 /*
  * 丢线超时后是否停车。
