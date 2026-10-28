@@ -23,3 +23,6 @@ Thumbs.db
 logs/
 __pycache__/
 *.pyc
+
+# Python 分析虚拟环境（tools/ 下的辨识脚本用）
+.venv/
