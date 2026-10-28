@@ -173,6 +173,8 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->corner_release = 0U;
     pd->corner_dir     = 0;
     pd->corner_dir_src = 0U;
+    pd->corner_dir_alt = 0U;
+    pd->corner_dir_flip_tick = 0U;
     pd->corner_dir_hold = 0U;
     pd->corner_acute   = 0U;
     pd->commit_ms      = 0U;
@@ -512,8 +514,13 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             if ((pd->corner_active == 0U) &&
                 (pd->corner_confirm >= LINE_CORNER_CONFIRM_CYCLES))
             {
-                pd->corner_dir     = 0;
-                pd->corner_dir_src = 0U;
+                /*
+                 * 注意：这里【不再清零】corner_dir。
+                 * 窄/短赛道的事件会被频繁重建，每次清零就等于每 200ms
+                 * 重新投票一次方向，方向必然乱跳（实测 cd 0.19s 翻一次）。
+                 * 现在沿用上一段方向，翻向交给下面的迟滞逻辑。
+                 */
+                pd->corner_dir_alt = 0U;
                 pd->corner_acute   = 0U;
                 pd->corner_active  = 1U;
                 pd->corner_release = 0U;
@@ -539,12 +546,47 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
              */
             if (evidence != 0)
             {
-                if ((pd->corner_dir_src == 0U) ||
-                    ((src == 1U) && (pd->corner_dir_src == 2U)))
+                if (pd->corner_dir == 0)
                 {
-                    pd->corner_dir     = evidence;
-                    pd->corner_dir_src = src;
+                    /* 还没有方向：直接采纳 */
+                    pd->corner_dir           = evidence;
+                    pd->corner_dir_src       = src;
+                    pd->corner_dir_alt       = 0U;
+                    pd->corner_dir_flip_tick = HAL_GetTick();
                 }
+                else if (evidence == pd->corner_dir)
+                {
+                    /* 同向：清反向计数；SIDE 可以升级 FORK 的来源等级 */
+                    pd->corner_dir_alt = 0U;
+
+                    if ((src == 1U) && (pd->corner_dir_src == 2U))
+                    {
+                        pd->corner_dir_src = 1U;
+                    }
+                }
+                else if (pd->commit_active == 0U)
+                {
+                    /*
+                     * 反向证据：迟滞。必须连续 N 拍，
+                     * 且距上次锁定 >= HOLD_MS 才允许翻转。
+                     * commit 期间一律禁止（否则承诺转向会中途改向）。
+                     */
+                    if (pd->corner_dir_alt < 0xFFU)
+                    {
+                        pd->corner_dir_alt++;
+                    }
+
+                    if ((pd->corner_dir_alt >= LINE_CORNER_DIR_FLIP_CYCLES) &&
+                        ((HAL_GetTick() - pd->corner_dir_flip_tick) >=
+                         LINE_CORNER_DIR_FLIP_HOLD_MS))
+                    {
+                        pd->corner_dir           = evidence;
+                        pd->corner_dir_src       = src;
+                        pd->corner_dir_alt       = 0U;
+                        pd->corner_dir_flip_tick = HAL_GetTick();
+                    }
+                }
+
                 /* 只要这一拍还有方向证据，就把"出弯后记忆"续上 */
                 pd->corner_dir_hold = LINE_CORNER_DIR_HOLD_CYCLES;
             }

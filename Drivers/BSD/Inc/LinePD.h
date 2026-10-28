@@ -617,7 +617,23 @@
 #define LINE_CORNER_DIFF_BOOST      1.35f
 
 /* 进入角点事件需要连续多少拍（Gray 已做帧级防抖，这里只需再确认 1 拍） */
-#define LINE_CORNER_CONFIRM_CYCLES  1U
+/*
+ * 角点确认拍数。原来是 1（一拍 SIDE 就进事件），在窄/短赛道上
+ * 车身轻微偏移就会不断"进入角点"，实测方向乱跳。
+ * 改成 2 拍（80ms）保留响应速度，同时滤掉单拍毛刺。
+ */
+#define LINE_CORNER_CONFIRM_CYCLES  2U
+
+/*
+ * 方向迟滞（2026-10-28 实测：窄赛道里 cd 在 0.2s 内 -1/+1 反复翻，
+ * 车被反复告知反向，直接摆到丢线）。
+ *
+ *   1) 新角点事件开始【不再清零】上一段方向，直接沿用；
+ *   2) 反向证据必须连续 N 拍、且距上次锁定 >= HOLD_MS 才允许翻转；
+ *   3) commit（承诺转向）期间禁止翻转。
+ */
+#define LINE_CORNER_DIR_FLIP_CYCLES     3U
+#define LINE_CORNER_DIR_FLIP_HOLD_MS    250U
 
 /* 连续多少拍回到 LINE 才认为出弯（3 拍 = 120ms，防弯心残留宽黑带误释放） */
 #define LINE_CORNER_RELEASE_CYCLES  3U
@@ -977,6 +993,9 @@ typedef struct
     int8_t   corner_dir;
     /* 方向证据来源：0 = 无，1 = SIDE（哪半边全黑，优先），2 = FORK（另一条腿） */
     uint8_t  corner_dir_src;
+    /* 反向证据连续计数 + 上次锁定时刻（方向迟滞用） */
+    uint8_t  corner_dir_alt;
+    uint32_t corner_dir_flip_tick;
     /* 出弯后方向记忆还剩多少拍（见 LINE_CORNER_DIR_HOLD_CYCLES） */
     uint8_t  corner_dir_hold;
 

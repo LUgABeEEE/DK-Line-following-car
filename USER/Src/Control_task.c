@@ -30,6 +30,7 @@
 extern Gray_Sensor_t g_gray;
 extern Line_PD_t     g_line_pd;
 extern I2C_HandleTypeDef hi2c1;
+extern I2C_HandleTypeDef hi2c2;
 
 /* ------------------------------------------------------------------------- */
 /* 任务内部状态                                                                */
@@ -167,6 +168,29 @@ static void ControlTask_Main(void *argument)
 
         /* 陀螺仪：读角速度 + 积分航向（20ms 一拍，和速度环同频） */
         MPU6050_Update();
+
+        /*
+         * MPU6050 掉线重试：上电时可能因为模块还没稳定/接插件接触不良
+         * 导致初始化失败。这里每 3 秒重试一次；只有车停着（STOP）才标定，
+         * 避免把行驶中的角速度当零偏。
+         */
+        if (MPU6050_IsReady() == 0U)
+        {
+            static uint32_t s_mpu_retry_tick = 0U;
+
+            if ((HAL_GetTick() - s_mpu_retry_tick) >= 3000U)
+            {
+                s_mpu_retry_tick = HAL_GetTick();
+
+                if (MPU6050_Init(&hi2c2) != 0U)
+                {
+                    if (g_ctrl_mode == CTRL_MODE_STOP)
+                    {
+                        (void)MPU6050_Calibrate(100U);
+                    }
+                }
+            }
+        }
 
         /*
          * ---- 传感器采样：每个 20ms 节拍都读 ----

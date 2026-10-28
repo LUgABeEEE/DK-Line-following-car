@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "aq"
+#define BLE_BUILD_TAG   "ar"
 
 /*
  * UART 发送超时，单位 ms。
@@ -87,6 +87,7 @@ extern Gray_Sensor_t g_gray;
 
 /* I2C1 句柄（灰度传感器所挂总线） */
 extern I2C_HandleTypeDef hi2c1;
+extern I2C_HandleTypeDef hi2c2;
 
 /* 外环实例定义在 main.c 中 */
 extern Line_PD_t g_line_pd;
@@ -349,6 +350,25 @@ static void BleTask_ScanI2C(void)
     uint8_t  addr;
     uint8_t  found = 0U;
     uint32_t mapr;
+
+    /*
+     * 顺便扫一下 I2C2（OLED + MPU6050 共总线）。
+     * MPU6050：AD0=GND -> 0x68，AD0=VCC -> 0x69；这里能直接看出模块在不在。
+     */
+    {
+        uint8_t i2c2_found = 0U;
+
+        BleTask_Print("[I2C2] scan:");
+        for (addr = 0x08U; addr < 0x78U; addr++)
+        {
+            if (HAL_I2C_IsDeviceReady(&hi2c2, (uint16_t)(addr << 1), 2U, 5U) == HAL_OK)
+            {
+                BleTask_Print(" 0x%02X", (unsigned int)addr);
+                i2c2_found++;
+            }
+        }
+        BleTask_Print(i2c2_found ? "\r\n" : " (none)\r\n");
+    }
 
     /*
      * 先报告三个硬件状态，这是判断"为什么读不到"的关键：
@@ -635,7 +655,7 @@ static void BleTask_Main(void *argument)
      * 排查问题时最怕"以为烧了新固件其实没有"，或者在两种版本间来回搞混。
      * 每次有重要改动就更新这里的日期字母后缀，连上蓝牙就能确认。
      */
-    BleTask_Print("[VER] line-follower 2025-10-28aq P%d (built " __DATE__ " " __TIME__ ")\r\n",
+    BleTask_Print("[VER] line-follower 2025-10-28ar P%d (built " __DATE__ " " __TIME__ ")\r\n",
                   (int)LINE_SIMPLE_PROFILE);
     BleTask_Print("[BleTask] X=stop I=scan I2C N=name\r\n");
 
@@ -856,7 +876,7 @@ static void BleTask_Main(void *argument)
                      * 结果永远看不到 —— 导致好几次搞不清烧的是哪一版。
                      * 放在这里就能保证每次连接都能确认。
                      */
-                    BleTask_Print("[VER] line-follower 2025-10-28aq P%d (built "
+                    BleTask_Print("[VER] line-follower 2025-10-28ar P%d (built "
                                   __DATE__ " " __TIME__ ")\r\n",
                                   (int)LINE_SIMPLE_PROFILE);
                     BleTask_Print("[BLE] gray data: 3 lines per second\r\n");
