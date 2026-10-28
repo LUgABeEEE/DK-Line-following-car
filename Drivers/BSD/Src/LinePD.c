@@ -225,7 +225,9 @@ void LinePD_Stop(Line_PD_t *pd)
  * 之后即使高速漏检，也能按里程兜底停车。
  * 断电丢失（放 RAM）——重启后先低速跑一圈即可重新学到。
  */
+#if (LINE_RACE_LEARN_LAP != 0)
 static float s_learned_lap_cm = 0.0f;
+#endif
 
 /* 两轮累计里程的平均值，cm（编码器量的是轮子转过的距离） */
 static float LinePD_RaceTravel(const Line_PD_t *pd)
@@ -354,6 +356,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                     pd->race_phase     = 2U;
                     pd->race_detect_cm = traveled;
 
+#if (LINE_RACE_LEARN_LAP != 0)
                     /* 学习周长：识别点 + 17cm（只做自适应模式） */
                     if ((pd->race_lap_cm <= 0.0f) &&
                         ((traveled + LINE_RACE_STOP_OFFSET_CM) >= LINE_RACE_LEARN_MIN_CM))
@@ -369,6 +372,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                             s_learned_lap_cm = lap_est;
                         }
                     }
+#endif
                 }
                 gray->stop_bar_seen = 0U;
             }
@@ -381,6 +385,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                 {
                     pd->race_phase = 3U;
                 }
+#if (LINE_RACE_LEARN_LAP != 0)
                 else if ((pd->race_lap_cm <= 0.0f) &&
                          (s_learned_lap_cm > 0.0f) &&
                          (traveled >= (s_learned_lap_cm - LINE_RACE_FALLBACK_CM)))
@@ -388,6 +393,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                     /* 自适应模式：用上次学到的周长兜底（高速漏检时靠它） */
                     pd->race_phase = 3U;
                 }
+#endif
                 else if ((pd->race_lap_cm <= 0.0f) &&
                          (traveled >= LINE_RACE_MAX_CM))
                 {
@@ -1626,7 +1632,11 @@ void LinePD_RaceCancel(Line_PD_t *pd)
 
 float LinePD_RaceLearnedLapCm(void)
 {
+#if (LINE_RACE_LEARN_LAP != 0)
     return s_learned_lap_cm;
+#else
+    return 0.0f;
+#endif
 }
 
 uint8_t LinePD_RaceDone(const Line_PD_t *pd)

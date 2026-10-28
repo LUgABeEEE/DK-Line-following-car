@@ -69,12 +69,13 @@ async def run(args) -> int:
                 fh.flush()
                 line_count += 1
 
-    backoff = 2.0
+    backoff = args.retry_delay
     while True:
         dev = await find_device(args.name, args.address)
         if dev is None:
-            print("[ble] 没扫描到设备，2s 后重试（确认模块上电、不在被手机占用）")
-            await asyncio.sleep(2.0)
+            print(f"[ble] 没扫描到设备，{backoff:.0f}s 后重试（确认模块上电、不在被手机占用）")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 1.5, 30.0)
             continue
 
         print(f"[ble] 找到 {dev.address} ({dev.name})，连接…")
@@ -103,14 +104,18 @@ async def run(args) -> int:
                 while True:
                     await asyncio.sleep(1.0)
                     if asyncio.get_event_loop().time() - last_rx > args.idle_timeout:
-                        print(f"[ble] {args.idle_timeout}s 无数据，重连")
+                        print(f"[ble] {args.idle_timeout}s 无数据，断开重连")
                         break
         except asyncio.CancelledError:
             raise
         except Exception as e:
             print(f"[ble] 连接/接收失败：{e}")
             await asyncio.sleep(backoff)
-            backoff = min(backoff * 1.5, 5.0)
+            backoff = min(backoff * 1.5, 30.0)
+
+        # 正常断开/无数据：等久一点再连，避免反复连接在桌面上弹配对请求
+        await asyncio.sleep(args.retry_delay)
+        backoff = min(backoff * 1.5, 30.0)
 
     fh.close()
     return 0
@@ -122,6 +127,8 @@ def main() -> int:
     ap.add_argument("--address", default=None)
     ap.add_argument("--outdir", default="logs")
     ap.add_argument("--idle-timeout", type=float, default=5.0)
+    ap.add_argument("--retry-delay", type=float, default=10.0,
+                    help="重连间隔（秒）；调大可减少桌面配对弹窗")
     args = ap.parse_args()
     if not args.name and not args.address:
         ap.error("--name 或 --address 至少给一个")
