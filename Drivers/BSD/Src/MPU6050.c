@@ -24,6 +24,7 @@
 /* 内部状态                                                                    */
 /* ------------------------------------------------------------------------- */
 static I2C_HandleTypeDef *s_hi2c = NULL;
+static uint16_t s_addr  = (uint16_t)(MPU6050_ADDR_7BIT_LOW << 1);  /* 8 位地址 */
 static uint8_t  s_ready = 0U;
 static uint16_t s_faults = 0U;
 
@@ -45,7 +46,7 @@ static uint8_t MPU_WriteReg(uint8_t reg, uint8_t value)
         return 0U;
     }
 
-    return (HAL_I2C_Mem_Write(s_hi2c, MPU6050_I2C_ADDR, reg,
+    return (HAL_I2C_Mem_Write(s_hi2c, s_addr, reg,
                               I2C_MEMADD_SIZE_8BIT, &value, 1U, 10U) == HAL_OK)
            ? 1U : 0U;
 }
@@ -57,7 +58,7 @@ static uint8_t MPU_ReadRegs(uint8_t reg, uint8_t *buf, uint16_t len)
         return 0U;
     }
 
-    return (HAL_I2C_Mem_Read(s_hi2c, MPU6050_I2C_ADDR, reg,
+    return (HAL_I2C_Mem_Read(s_hi2c, s_addr, reg,
                              I2C_MEMADD_SIZE_8BIT, buf, len, 10U) == HAL_OK)
            ? 1U : 0U;
 }
@@ -116,10 +117,35 @@ uint8_t MPU6050_Init(I2C_HandleTypeDef *hi2c)
     /* 模块上电需要几十毫秒稳定 */
     HAL_Delay(30U);
 
-    if ((MPU_ReadRegs(MPU_REG_WHO_AM_I, &who, 1U) == 0U) ||
-        (who != MPU6050_WHO_AM_I_VAL))
+    /*
+     * 自动探测地址：AD0 接 GND = 0x68，接 VCC = 0x69。
+     * WHO_AM_I 固定返回 0x68，与地址无关，所以按响应来选。
+     */
     {
-        return 0U;
+        static const uint8_t cand[2] =
+        {
+            (uint8_t)(MPU6050_ADDR_7BIT_LOW  << 1),
+            (uint8_t)(MPU6050_ADDR_7BIT_HIGH << 1)
+        };
+        uint8_t found = 0U;
+        uint8_t k;
+
+        for (k = 0U; k < 2U; k++)
+        {
+            s_addr = cand[k];
+
+            if ((MPU_ReadRegs(MPU_REG_WHO_AM_I, &who, 1U) != 0U) &&
+                (who == MPU6050_WHO_AM_I_VAL))
+            {
+                found = 1U;
+                break;
+            }
+        }
+
+        if (found == 0U)
+        {
+            return 0U;
+        }
     }
 
     (void)MPU_WriteReg(MPU_REG_PWR_MGMT_1, 0x80U);  /* 复位            */

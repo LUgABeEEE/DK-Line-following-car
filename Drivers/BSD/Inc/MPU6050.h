@@ -20,8 +20,15 @@
 #include "main.h"
 #include <stdint.h>
 
-/* 7 位地址 0x68（AD0 接地），HAL 用 8 位地址 */
-#define MPU6050_I2C_ADDR        (0x68U << 1)
+/*
+ * I2C 地址（7 位）：
+ *   AD0 接 GND -> 0x68
+ *   AD0 接 VCC -> 0x69   （本车实际接 VCC，见用户说明）
+ * 驱动会在初始化时自动探测这两个地址，不用手动改；
+ * WHO_AM_I（0x75）固定返回 0x68，与地址无关。
+ */
+#define MPU6050_ADDR_7BIT_LOW   0x68U
+#define MPU6050_ADDR_7BIT_HIGH  0x69U
 #define MPU6050_WHO_AM_I_VAL    0x68U
 
 /* yaw 轴映射：X 朝前、Z 竖直 -> 用 Z 轴，左转为正 */
