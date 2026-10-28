@@ -306,10 +306,21 @@
  * B) 位置低通：8 路量化步长 0.7cm，50cm/s 时误差是阶梯状，
  *    先一阶低通再进 PD，能明显压掉"阶梯引起的高频摆动"。
  */
-#define LINE_THETA_FF_GAIN          1.60f   /* 前馈增益（× v × θ） */
+#define LINE_THETA_FF_GAIN          0.80f   /* 前馈增益（× v × θ） */
 #define LINE_THETA_MAX_RAD          0.70f   /* θ 限幅（约 40°） */
 #define LINE_THETA_LPF              0.50f   /* θ 低通系数 */
 #define LINE_POS_LPF_ALPHA          0.50f   /* 位置低通系数 */
+
+/*
+ * 前馈的工程化约束（大佬们加前馈都有的三条，缺一条就会"越加越抖"）：
+ *
+ *   1) 死区：|θ| 很小（车基本直的）时不加，避免把量化噪声放大成差速；
+ *   2) 斜坡限幅：前馈每拍最多变化多少，杜绝"一拍打满"；
+ *   3) 输出限幅：前馈最多占差速上限的多少（它只是辅助，不该主导转向）。
+ */
+#define LINE_THETA_DEADBAND         0.04f   /* rad，约 2.3° */
+#define LINE_THETA_FF_SLEW_CMS      2.0f    /* 每拍(40ms)前馈变化上限 cm/s */
+#define LINE_THETA_FF_CLAMP_RATIO   0.35f   /* 前馈 <= 0.35 × 差速上限 */
 
 /*
  * ---- 惯导（MPU6050）：A yaw 阻尼 / B 陀螺航向 / C 定角转弯 ----
@@ -867,6 +878,13 @@ typedef struct
     float   theta_rad;      /* 线在车头下的切线角（rad，低通后）                       */
     float   last_pos_f;     /* 上一拍的滤波位置                                       */
     float   last_dist_cm;   /* 上一拍的两轮平均里程                                   */
+
+    /* 最近 3 个 (位置, 里程) 样本，用最小二乘斜率估 θ，比两点差分抗噪 */
+    float   pos_hist[3];
+    float   dist_hist[3];
+    uint8_t hist_count;
+
+    float   theta_ff;       /* 当前实际叠加的前馈量（经过死区/斜坡/限幅）             */
 
     /* ---- 比赛自动停车 ---- */
     float   commit_target_deg; /* 本次承诺转向的目标角度（锐角/直角不同）   */

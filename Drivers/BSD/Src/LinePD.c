@@ -147,6 +147,10 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->theta_rad      = 0.0f;
     pd->last_pos_f     = 0.0f;
     pd->last_dist_cm   = 0.0f;
+    pd->hist_count     = 0U;
+    pd->theta_ff       = 0.0f;
+    memset(pd->pos_hist,  0, sizeof(pd->pos_hist));
+    memset(pd->dist_hist, 0, sizeof(pd->dist_hist));
     pd->commit_target_deg = 0.0f;
     pd->race_enabled   = 0U;
     pd->race_phase     = 0U;
@@ -633,21 +637,81 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
      */
     {
         float dist_now = LinePD_RaceTravel(pd);
-        float ds       = dist_now - pd->last_dist_cm;
 
-        if ((Gray_IsLineLost(gray) != 0U) || (assist != 0U) ||
-            (ds <= 0.05f) || (ds > 5.0f))
+        if ((Gray_IsLineLost(gray) != 0U) || (assist != 0U))
         {
+            pd->hist_count   = 0U;
             pd->last_dist_cm = dist_now;
             pd->last_pos_f   = pd->pos_filter;
             pd->theta_rad   += 0.5f * (0.0f - pd->theta_rad);
         }
         else
         {
-            float th = (pd->pos_filter - pd->last_pos_f) / ds;
+            /*
+             * 维护最近 3 个 (位置, 里程) 样本，用最小二乘斜率估线角。
+             *
+             * 两点差分（Δpos/Δs）本质是对含噪声的位置做微分：8 路量化 0.7cm，
+             * 40ms 内只走 2cm，噪声能把 θ 顶到 ±0.3rad，前馈直接变成抖动源。
+             * 用 3 点回归把基线拉长到 80ms/4cm，斜率噪声大约降到 1/3。
+             */
+            if (pd->hist_count < 3U)
+            {
+                pd->pos_hist[pd->hist_count]  = pd->pos_filter;
+                pd->dist_hist[pd->hist_count] = dist_now;
+                pd->hist_count++;
+            }
+            else
+            {
+                pd->pos_hist[0]  = pd->pos_hist[1];
+                pd->pos_hist[1]  = pd->pos_hist[2];
+                pd->dist_hist[0] = pd->dist_hist[1];
+                pd->dist_hist[1] = pd->dist_hist[2];
+                pd->pos_hist[2]  = pd->pos_filter;
+                pd->dist_hist[2] = dist_now;
+            }
 
-            th = LinePD_Clamp(th, LINE_THETA_MAX_RAD);
-            pd->theta_rad += LINE_THETA_LPF * (th - pd->theta_rad);
+            if (pd->hist_count >= 3U)
+            {
+                float sm = 0.0f, sp = 0.0f, ssd = 0.0f, spd = 0.0f;
+                float ds_total = pd->dist_hist[2] - pd->dist_hist[0];
+                uint8_t k;
+
+                for (k = 0U; k < 3U; k++)
+                {
+                    sm  += pd->dist_hist[k];
+                    sp  += pd->pos_hist[k];
+                }
+                sm /= 3.0f;
+                sp /= 3.0f;
+
+                for (k = 0U; k < 3U; k++)
+                {
+                    float dd = pd->dist_hist[k] - sm;
+                    float dp = pd->pos_hist[k]  - sp;
+
+                    ssd += dd * dd;
+                    spd += dd * dp;
+                }
+
+                if ((ds_total > 1.0f) && (ssd > 0.01f))
+                {
+                    float th = spd / ssd;
+
+                    th = LinePD_Clamp(th, LINE_THETA_MAX_RAD);
+
+                    /* 死区：接近直线时不加前馈，避免放大噪声 */
+                    if ((th > -LINE_THETA_DEADBAND) && (th < LINE_THETA_DEADBAND))
+                    {
+                        th = 0.0f;
+                    }
+
+                    pd->theta_rad += LINE_THETA_LPF * (th - pd->theta_rad);
+                }
+                else
+                {
+                    pd->theta_rad += 0.5f * (0.0f - pd->theta_rad);
+                }
+            }
 
             pd->last_dist_cm = dist_now;
             pd->last_pos_f   = pd->pos_filter;
@@ -763,12 +827,27 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
          */
         if ((assist == 0U) && (pd->all_assist == 0U) && (pd->corner_active == 0U))
         {
-            float ff = LINE_THETA_FF_GAIN * pd->speed * pd->theta_rad;
-            float ff_limit = pd->diff_limit * 0.60f;
+            float ff_target = LINE_THETA_FF_GAIN * pd->speed * pd->theta_rad;
+            float ff_limit  = pd->diff_limit * LINE_THETA_FF_CLAMP_RATIO;
+            float delta;
 
-            ff = LinePD_Clamp(ff, ff_limit);
-            steer += ff;
+            ff_target = LinePD_Clamp(ff_target, ff_limit);
+
+            /* 斜坡限幅：一拍最多变 LINE_THETA_FF_SLEW_CMS，杜绝"一拍打满" */
+            delta = ff_target - pd->theta_ff;
+            delta = LinePD_Clamp(delta, LINE_THETA_FF_SLEW_CMS);
+            pd->theta_ff += delta;
         }
+        else
+        {
+            /* 角点/assist 时前馈快速退回 0 */
+            float delta = 0.0f - pd->theta_ff;
+
+            delta = LinePD_Clamp(delta, LINE_THETA_FF_SLEW_CMS);
+            pd->theta_ff += delta;
+        }
+
+        steer += pd->theta_ff;
 
         /*
          * A) yaw 阻尼：车身正在转（ω_yaw）就反向给差速，
