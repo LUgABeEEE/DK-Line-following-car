@@ -17,7 +17,7 @@
 | 电机 | N20 减速电机（**6 V 额定**）+ 霍尔编码器 | 实测轮径 48 mm、约 1300 计数/轮转（PSC=0）；2S 7.4 V 供电，占空比 100 % ≈ 7.4 V（超压 23 %），见第 6 节 |
 | 循迹传感器 | 8 路灰度，I2C 地址 `0x5D` | 实测探头间距 7 mm，I2C1 400 kHz |
 | 显示 | 0.96" OLED（SSD1306，128×64） | I2C2，400 kHz |
-| 无线 | HC-05 蓝牙透传 | USART2，9600 8N1 |
+| 无线 | **JDY-31**（经典蓝牙 3.0 SPP）或 HC-05 | USART2，9600 8N1；6 针底板：STATE/RXD/TXD/GND/VCC/EN(空)，底板 3.6~6V 供电 |
 | 姿态 | MPU6050 六轴 | I2C2，与 OLED 共总线；**AD0 接 VCC → 7 位地址 0x69**（驱动自动探测 0x68/0x69），X 朝前、Z 竖直 |
 | 电源 | 2S 7.4 V 锂电 + 2S 保护板 | DCDC 7.4→5 V（LMR14030）→ LDO 5→3.3 V（TLV75733） |
 
@@ -32,6 +32,15 @@
 > - 固件上电自动握手 9600/38400，成功后配置：**从机 + 广播名 `LFCar` + 配对码 `1234`**
 >   （`BLE_AutoConfig()`，`Ble.h` 的 `BLE_AUTOCONFIG_ON_BOOT` 可关）；
 > - `AT+UART` 改波特率后**必须重新上电**才生效，固件不动它。
+>
+> **JDY-31（经典 SPP，构建 `aq` 起）**
+>
+> - 未连接时就是 AT 模式，命令以 `\r\n` 结尾：`AT+VERSION` / `AT+NAME<名>` /
+>   `AT+PIN<4位>` / `AT+BAUD<4..9>` / `AT+ENLOG<0|1>` / `AT+RESET` / `AT+DISC`；
+> - 出厂：9600、名 JDY-31-SPP、PIN 1234；底板 EN 引脚为空，STATE 在连接后为高；
+> - 固件上电自动识别 JDY-31/HC-05（`AT+VERSION` 含 JDY-31 即判定），
+>   识别为 JDY-31 时自动设置 `AT+NAMELFCar`、`AT+PIN1234`、`AT+ENLOG0`；
+> - 它是**经典蓝牙 SPP**，电脑端要用 RFCOMM 配对（PIN 1234），不能用 BLE GATT。
 
 ---
 

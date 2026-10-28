@@ -351,7 +351,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                     (gray->position_cm > -LINE_RACE_DETECT_ERR_CM) &&
                     (gray->position_cm <  LINE_RACE_DETECT_ERR_CM) &&
                     ((pd->race_lap_cm > 0.0f) ||
-                     (traveled >= LINE_RACE_LEARN_MIN_CM)))
+                     (traveled >= LINE_RACE_DETECT_MIN_CM)))
                 {
                     pd->race_phase     = 2U;
                     pd->race_detect_cm = traveled;
@@ -359,7 +359,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 #if (LINE_RACE_LEARN_LAP != 0)
                     /* 学习周长：识别点 + 17cm（只做自适应模式） */
                     if ((pd->race_lap_cm <= 0.0f) &&
-                        ((traveled + LINE_RACE_STOP_OFFSET_CM) >= LINE_RACE_LEARN_MIN_CM))
+                        ((traveled + LINE_RACE_STOP_OFFSET_CM) >= LINE_RACE_DETECT_MIN_CM))
                     {
                         float lap_est = traveled + LINE_RACE_STOP_OFFSET_CM;
 

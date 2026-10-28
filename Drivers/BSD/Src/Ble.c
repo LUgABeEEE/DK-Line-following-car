@@ -132,6 +132,25 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 /* 初始化                                                                      */
 /* ------------------------------------------------------------------------- */
 
+/* ------------------------------------------------------------------------- */
+/* 模块类型（自动识别）                                                        */
+/* ------------------------------------------------------------------------- */
+#define BLE_MODULE_UNKNOWN      0U
+#define BLE_MODULE_HC05         1U
+#define BLE_MODULE_JDY31        2U
+
+static uint8_t s_module_type = BLE_MODULE_UNKNOWN;
+
+const char *BLE_ModuleName(void)
+{
+    switch (s_module_type)
+    {
+        case BLE_MODULE_JDY31: return "JDY-31";
+        case BLE_MODULE_HC05:  return "HC-05";
+        default:               return "unknown";
+    }
+}
+
 void BLE_Init(void)
 {
     /* 清状态 */
@@ -413,8 +432,29 @@ uint8_t BLE_SetBaud(uint32_t baud)
         return 0U;
     }
 
-    /* HC-05 的命令是 AT+UART=<baud>,<stop>,<parity> */
-    (void)snprintf(cmd, sizeof(cmd), "AT+UART=%lu,0,0", (unsigned long)baud);
+    if (s_module_type == BLE_MODULE_JDY31)
+    {
+        /* JDY-31：AT+BAUD<4..9>（4=9600 5=19200 6=38400 7=57600 8=115200 9=128000） */
+        const char *param = NULL;
+
+        switch (baud)
+        {
+            case 9600U:   param = "4"; break;
+            case 19200U:  param = "5"; break;
+            case 38400U:  param = "6"; break;
+            case 57600U:  param = "7"; break;
+            case 115200U: param = "8"; break;
+            case 128000U: param = "9"; break;
+            default: return 0U;
+        }
+
+        (void)snprintf(cmd, sizeof(cmd), "AT+BAUD%s", param);
+    }
+    else
+    {
+        /* HC-05 的命令是 AT+UART=<baud>,<stop>,<parity> */
+        (void)snprintf(cmd, sizeof(cmd), "AT+UART=%lu,0,0", (unsigned long)baud);
+    }
 
     return BLE_SendAT(cmd, resp, sizeof(resp));
 }
@@ -435,15 +475,22 @@ uint8_t BLE_SetBaud(uint32_t baud)
  */
 uint8_t BLE_AutoConfig(void)
 {
-    static const uint32_t bauds[2] = { 9600U, 38400U };
+    static const uint32_t bauds[3] = { 9600U, 38400U, 115200U };
     char     resp[BLE_LINE_BUFFER_SIZE];
-    uint8_t  ok = 0U;
+    uint8_t  detected = 0U;
     uint32_t used_baud = 9600U;
     uint32_t i;
 
-    BLE_EnterATMode();
+    /*
+     * 自动识别模块：
+     *   JDY-31  : AT+VERSION 返回 "+VERSION=JDY-31-..."
+     *   HC-05   : AT 返回 "OK"
+     * JDY-31 未连接时就是 AT 模式，不需要 KEY 引脚；
+     * HC-05 出厂 9600、上电未配对时也是 AT 模式。
+     */
+    s_module_type = BLE_MODULE_UNKNOWN;
 
-    for (i = 0U; i < 2U; i++)
+    for (i = 0U; i < 3U; i++)
     {
         if (BLE_SetBaudInternal(bauds[i]) == 0U)
         {
@@ -453,32 +500,58 @@ uint8_t BLE_AutoConfig(void)
         BLE_FlushRx();
         HAL_Delay(20U);
 
+        if ((BLE_SendAT("AT+VERSION", resp, sizeof(resp)) != 0U) &&
+            (strstr(resp, "JDY-31") != NULL))
+        {
+            s_module_type = BLE_MODULE_JDY31;
+            detected = 1U;
+            used_baud = bauds[i];
+            break;
+        }
+
         if ((BLE_SendAT("AT", resp, sizeof(resp)) != 0U) &&
             (strstr(resp, "OK") != NULL))
         {
-            ok = 1U;
+            s_module_type = BLE_MODULE_HC05;
+            detected = 1U;
             used_baud = bauds[i];
             break;
         }
     }
 
-    if (ok == 0U)
+    if (detected == 0U)
     {
         (void)BLE_SetBaudInternal(9600U);
-        BLE_ExitATMode();
         return 0U;
     }
 
-    (void)BLE_SendAT("AT+ROLE=0",       resp, sizeof(resp));
-    (void)BLE_SendAT("AT+NAME=LFCar",   resp, sizeof(resp));
-    (void)BLE_SendAT("AT+PSWD=1234",    resp, sizeof(resp));
+    if (s_module_type == BLE_MODULE_JDY31)
+    {
+        /* JDY-31：AT+NAME<name> / AT+PIN<4位> / AT+ENLOG<0|1> */
+        (void)BLE_SendAT("AT+NAMELFCar", resp, sizeof(resp));
+        (void)BLE_SendAT("AT+PIN1234",  resp, sizeof(resp));
+        (void)BLE_SendAT("AT+ENLOG0",   resp, sizeof(resp));  /* 别让状态行混进日志 */
+    }
+    else
+    {
+        /* HC-05：AT 模式靠 KEY 引脚，参数用 = 形式 */
+        BLE_EnterATMode();
+        (void)BLE_SendAT("AT+ROLE=0",    resp, sizeof(resp));
+        (void)BLE_SendAT("AT+NAME=LFCar", resp, sizeof(resp));
+        (void)BLE_SendAT("AT+PSWD=1234",  resp, sizeof(resp));
+    }
 
     if (used_baud != 9600U)
     {
         (void)BLE_SetBaudInternal(9600U);
     }
 
-    BLE_ExitATMode();
+    if (s_module_type == BLE_MODULE_HC05)
+    {
+        BLE_ExitATMode();
+    }
+
+    BLE_FlushRx();
     HAL_Delay(20U);
     return 1U;
 }
@@ -499,7 +572,15 @@ uint8_t BLE_SetName(const char *name)
         return 0U;
     }
 
-    (void)snprintf(cmd, sizeof(cmd), "AT+NAME=%s", name);
+    if (s_module_type == BLE_MODULE_JDY31)
+    {
+        /* JDY-31：AT+NAME<name>，最长 18 字节 */
+        (void)snprintf(cmd, sizeof(cmd), "AT+NAME%s", name);
+    }
+    else
+    {
+        (void)snprintf(cmd, sizeof(cmd), "AT+NAME=%s", name);
+    }
 
     return BLE_SendAT(cmd, resp, sizeof(resp));
 }
@@ -514,7 +595,14 @@ uint8_t BLE_SetPin(const char *pin)
         return 0U;      /* HC-05 要求 4 位 */
     }
 
-    (void)snprintf(cmd, sizeof(cmd), "AT+PSWD=%s", pin);
+    if (s_module_type == BLE_MODULE_JDY31)
+    {
+        (void)snprintf(cmd, sizeof(cmd), "AT+PIN%s", pin);
+    }
+    else
+    {
+        (void)snprintf(cmd, sizeof(cmd), "AT+PSWD=%s", pin);
+    }
 
     return BLE_SendAT(cmd, resp, sizeof(resp));
 }
