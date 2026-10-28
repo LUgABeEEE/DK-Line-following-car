@@ -147,6 +147,11 @@ uint8_t BLE_GetCfgResult(void)
     return s_cfg_ok;
 }
 
+uint32_t BLE_GetBaudrate(void)
+{
+    return huart2.Init.BaudRate;
+}
+
 const char *BLE_ModuleName(void)
 {
     switch (s_module_type)
@@ -484,7 +489,6 @@ uint8_t BLE_AutoConfig(void)
     static const uint32_t bauds[3] = { 9600U, 38400U, 115200U };
     char     resp[BLE_LINE_BUFFER_SIZE];
     uint8_t  detected = 0U;
-    uint32_t used_baud = 9600U;
     uint32_t i;
 
     /*
@@ -511,7 +515,6 @@ uint8_t BLE_AutoConfig(void)
         {
             s_module_type = BLE_MODULE_JDY31;
             detected = 1U;
-            used_baud = bauds[i];
             break;
         }
 
@@ -520,7 +523,6 @@ uint8_t BLE_AutoConfig(void)
         {
             s_module_type = BLE_MODULE_HC05;
             detected = 1U;
-            used_baud = bauds[i];
             break;
         }
     }
@@ -548,11 +550,12 @@ uint8_t BLE_AutoConfig(void)
         (void)BLE_SendAT("AT+PSWD=1234",  resp, sizeof(resp));
     }
 
-    if (used_baud != 9600U)
-    {
-        (void)BLE_SetBaudInternal(9600U);
-    }
-
+    /*
+     * 注意：这里【不再强制回到 9600】。
+     * 如果模块本来跑在 38400/115200（比如之前被改过），
+     * 识别成功后把 MCU 拉回 9600 就会出现"连得上、没数据"。
+     * 保持识别到的波特率，透传才和模块一致。
+     */
     if (s_module_type == BLE_MODULE_HC05)
     {
         BLE_ExitATMode();

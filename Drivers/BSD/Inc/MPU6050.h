@@ -35,6 +35,13 @@
 #define MPU6050_YAW_AXIS        2U
 #define MPU6050_YAW_SIGN        (+1.0f)
 
+/*
+ * 400kHz 探测失败时是否允许降到 100kHz 重试。
+ * 2026-10-28 已在 I2C 总线上补了 1.7k 上拉，锁死 400kHz；
+ * 如果以后换板/线材又出现认不到，把它改回 1 即可。
+ */
+#define MPU6050_ALLOW_SLOW_FALLBACK  0
+
 /* 量程：±500°/s（循迹车最快约 200°/s，留余量） */
 #define MPU6050_GYRO_FS         500.0f
 #define MPU6050_GYRO_LSB_PER_DPS (65536.0f / (2.0f * MPU6050_GYRO_FS))

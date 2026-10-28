@@ -146,6 +146,7 @@ uint8_t MPU6050_Init(I2C_HandleTypeDef *hi2c)
 
     if (MPU_ProbeAddress() == 0U)
     {
+#if (MPU6050_ALLOW_SLOW_FALLBACK != 0)
         /*
          * 400kHz 探不到时降到 100kHz 再试一次。
          *
@@ -177,6 +178,9 @@ uint8_t MPU6050_Init(I2C_HandleTypeDef *hi2c)
         {
             return 0U;
         }
+#else
+        return 0U;     /* 不允许降速：保持 400kHz */
+#endif
     }
 
     (void)MPU_WriteReg(MPU_REG_PWR_MGMT_1, 0x80U);  /* 复位            */

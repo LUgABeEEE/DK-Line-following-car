@@ -171,6 +171,9 @@ const char *BLE_ModuleName(void);
 /* 上次 BLE_AutoConfig 的结果：1 = 成功识别并配置，0 = 失败 */
 uint8_t BLE_GetCfgResult(void);
 
+/* 当前 USART2 波特率（AutoConfig 识别到模块后可能不是 9600） */
+uint32_t BLE_GetBaudrate(void);
+
 /* 设置配对码（4 位数字字符串，如 "1234"）。 */
 uint8_t BLE_SetPin(const char *pin);
 
