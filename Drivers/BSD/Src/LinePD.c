@@ -500,6 +500,23 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             is_corner = 0U;
         }
 
+        /*
+         * SIDE 只在横向误差足够大时才算角点证据。
+         * 1cm 多的正常偏移也会让半边全黑，不设门限会被误当成弯。
+         */
+        if ((src == 1U) && (is_corner != 0U))
+        {
+            float pos = gray->position_cm;
+
+            if ((pos > -LINE_CORNER_TRIGGER_ERR_CM) &&
+                (pos <  LINE_CORNER_TRIGGER_ERR_CM))
+            {
+                is_corner = 0U;
+                evidence  = 0;
+                src       = 0U;
+            }
+        }
+
         if (is_corner != 0U)
         {
             if (pd->corner_confirm < 0xFFU)
