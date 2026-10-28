@@ -15,6 +15,7 @@
 //
 
 #include "Gray.h"
+#include "main.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -559,6 +560,21 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
 
         /* ---- 5a-2. 场景防抖（见 Gray.h 的 GRAY_SCENE_*_SAMPLES 说明） ---- */
         sensor->scene_raw = raw_scene;
+
+        /*
+         * 20ms 级角点证据锁存：只要这一拍瞬时看到 SIDE，就记下方向。
+         * 外环 40ms 即使没采到，也能在下一次 LinePD_Update 里取用。
+         */
+        if (raw_scene == GRAY_SCENE_SIDE_L)
+        {
+            sensor->side_latch_dir  = 1;
+            sensor->side_latch_tick = HAL_GetTick();
+        }
+        else if (raw_scene == GRAY_SCENE_SIDE_R)
+        {
+            sensor->side_latch_dir  = -1;
+            sensor->side_latch_tick = HAL_GetTick();
+        }
 
         {
             uint8_t raw_fam = Gray_SceneFamily(raw_scene);

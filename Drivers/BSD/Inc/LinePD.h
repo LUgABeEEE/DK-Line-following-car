@@ -641,6 +641,12 @@
 #define LINE_CORNER_TRIGGER_ERR_CM   2.0f
 
 /*
+ * Gray 20ms 级 SIDE 锁存的有效期。
+ * 外环 40ms 一拍，100ms 内看到过 SIDE 都算数（覆盖 2~3 个外环周期）。
+ */
+#define LINE_CORNER_LATCH_MS         100U
+
+/*
  * 方向迟滞（2026-10-28 实测：窄赛道里 cd 在 0.2s 内 -1/+1 反复翻，
  * 车被反复告知反向，直接摆到丢线）。
  *

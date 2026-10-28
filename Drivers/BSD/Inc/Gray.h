@@ -328,6 +328,19 @@ typedef struct
     int8_t   corner_dir;
 
     /*
+     * 20ms 级角点证据锁存（给 40ms 外环用）。
+     *
+     * Gray 每 20ms 更新一次瞬时场景，而 LinePD 外环 40ms 才读一次。
+     * 55cm/s 时一个 90° 角点的 SIDE 窗口可能只有 20~40ms，
+     * 外环有可能整拍错过 -> 方向锁不上 -> 到 ALL（全黑）时直着冲出去。
+     *
+     * 这里在 20ms 采样里记下"最近一次看到哪一侧 SIDE"和时间戳，
+     * LinePD 在自己的节拍上取用（见 LINE_CORNER_LATCH_MS）。
+     */
+    int8_t   side_latch_dir;     /* +1 最近见过 SIDE_L，-1 见过 SIDE_R，0 无 */
+    uint32_t side_latch_tick;    /* 最近一次看到 SIDE 的时间戳（ms） */
+
+    /*
      * ---- 场景判据的原始特征 ----
      * 这些是用来验证/标定判据的实数，直接输出到串口，
      * 阈值应该根据它们的实际分布来定，而不是凭直觉。

@@ -501,6 +501,19 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         }
 
         /*
+         * 20ms 级锁存补方向：
+         * 外环 40ms 若正好错过 SIDE 的短脉冲，用 Gray 最近 100ms 内的记录补上。
+         * 只补"方向证据"，是否触发角点事件仍由下面的门限决定。
+         */
+        if ((evidence == 0) &&
+            (gray->side_latch_dir != 0) &&
+            ((HAL_GetTick() - gray->side_latch_tick) <= LINE_CORNER_LATCH_MS))
+        {
+            evidence = gray->side_latch_dir;
+            src      = 1U;
+        }
+
+        /*
          * SIDE 只在横向误差足够大时才算角点证据。
          * 1cm 多的正常偏移也会让半边全黑，不设门限会被误当成弯。
          */
