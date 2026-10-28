@@ -168,6 +168,9 @@ uint8_t BLE_AutoConfig(void);
 /* 自动识别到的模块名："JDY-31" / "HC-05" / "unknown"（用于启动打印） */
 const char *BLE_ModuleName(void);
 
+/* 上次 BLE_AutoConfig 的结果：1 = 成功识别并配置，0 = 失败 */
+uint8_t BLE_GetCfgResult(void);
+
 /* 设置配对码（4 位数字字符串，如 "1234"）。 */
 uint8_t BLE_SetPin(const char *pin);
 

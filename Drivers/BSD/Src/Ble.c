@@ -140,6 +140,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 #define BLE_MODULE_JDY31        2U
 
 static uint8_t s_module_type = BLE_MODULE_UNKNOWN;
+static uint8_t s_cfg_ok = 0U;      /* 上次 BLE_AutoConfig 是否成功 */
+
+uint8_t BLE_GetCfgResult(void)
+{
+    return s_cfg_ok;
+}
 
 const char *BLE_ModuleName(void)
 {
@@ -521,6 +527,7 @@ uint8_t BLE_AutoConfig(void)
 
     if (detected == 0U)
     {
+        s_cfg_ok = 0U;
         (void)BLE_SetBaudInternal(9600U);
         return 0U;
     }
@@ -553,6 +560,7 @@ uint8_t BLE_AutoConfig(void)
 
     BLE_FlushRx();
     HAL_Delay(20U);
+    s_cfg_ok = 1U;
     return 1U;
 }
 
