@@ -80,6 +80,14 @@
 #define LINE_PD_PERIOD_MS           20U
 
 /*
+ * ⚠️ 本文件里所有"按拍数"的常量都按 20ms 一拍换算过（2026-10 从 40ms 提速）。
+ *    改动 LINE_PD_PERIOD_MS 时，必须同步重算下面这些：
+ *      LINE_LOST_TOLERANCE / LINE_CORNER_*_CYCLES / LINE_RECOVER_CYCLES /
+ *      LINE_ALL_*_CYCLES / LINE_STRAIGHT_TICKS / LINE_THETA_FF_SLEW_CMS
+ *    否则防抖时间和丢线容差会跟着周期一起被悄悄改掉。
+ */
+
+/*
  * 内外环周期比的下限。小于这个值说明外环跑太快，和内环抢执行机会，
  * 表现为整车高频振荡，而且分不清是哪个环的参数不对。
  */
@@ -257,7 +265,7 @@
 #if (LINE_SIMPLE_PROFILE == 0)
 /* 保守：弯多、直道短，或新场地第一次上车 */
 #define LINE_PD_DFLT_BASE_SPEED     40.0f   /* 基础速度 cm/s                 */
-#define LINE_STRAIGHT_TICKS         6U      /* 连续居中几拍才开始加速         */
+#define LINE_STRAIGHT_TICKS         12U     /* 连续居中几拍(20ms/拍)=240ms   */
 #define LINE_STRAIGHT_BOOST_MAX     0.15f   /* 直道最多 +15%（→ 46 cm/s）    */
 #define LINE_CORNER_SLOW_MAX        0.70f   /* 角点期间的速度上限系数         */
 #define LINE_LEAD_WEIGHT            0.80f   /* 入弯预判强度（越大越早减速）   */
@@ -273,7 +281,7 @@
  *    先把 LINE_STRAIGHT_BOOST_MAX 降到 0.20（→ 66 cm/s）再试。
  */
 #define LINE_PD_DFLT_BASE_SPEED     60.0f
-#define LINE_STRAIGHT_TICKS         4U
+#define LINE_STRAIGHT_TICKS         8U      /* 160ms */
 #define LINE_STRAIGHT_BOOST_MAX     0.25f
 #define LINE_CORNER_SLOW_MAX        0.62f
 #define LINE_LEAD_WEIGHT            0.60f
@@ -282,7 +290,7 @@
 #else
 /* 均衡（默认；非法值也落到这一档）—— 2026-10 实车调参结果，别轻易动 */
 #define LINE_PD_DFLT_BASE_SPEED     55.0f
-#define LINE_STRAIGHT_TICKS         5U
+#define LINE_STRAIGHT_TICKS         10U     /* 200ms */
 #define LINE_STRAIGHT_BOOST_MAX     0.30f
 #define LINE_CORNER_SLOW_MAX        0.68f   /* 弧线限速：直道快、弧线慢 */
 #define LINE_LEAD_WEIGHT            0.70f
@@ -367,7 +375,7 @@
  *   3) 输出限幅：前馈最多占差速上限的多少（它只是辅助，不该主导转向）。
  */
 #define LINE_THETA_DEADBAND         0.04f   /* rad，约 2.3° */
-#define LINE_THETA_FF_SLEW_CMS      2.0f    /* 每拍(40ms)前馈变化上限 cm/s */
+#define LINE_THETA_FF_SLEW_CMS      1.0f    /* 每拍(20ms)前馈变化上限 cm/s = 50cm/s² */
 #define LINE_THETA_FF_CLAMP_RATIO   0.35f   /* 前馈 <= 0.35 × 差速上限 */
 
 /*
@@ -606,7 +614,7 @@
  *   没找到就自动反方向再转一段。这样即使方向判断错，
  *   最多多花一段时间，不会彻底丢线。
  */
-#define LINE_RECOVER_CYCLES         2U
+#define LINE_RECOVER_CYCLES         4U    /* 80ms */
 
 /*
  * 搜索方向判定所需的最小信息量，单位 cm。
@@ -667,13 +675,13 @@
 #define LINE_STOP_ON_ALL_BLACK      0
 
 /* 判定 ALL 需要连续多少拍，避免单帧噪声误触发 */
-#define LINE_ALL_CONFIRM_CYCLES     2U
+#define LINE_ALL_CONFIRM_CYCLES     4U    /* 80ms */
 
 /*
  * ALL（8 路全黑）+ 已有方向时，即使没进角点事件也满舵转向。
  * 全黑时位置解算失效（e≈0），不接管的话车会按直道全速冲出弯。
  */
-#define LINE_ALL_ASSIST_CYCLES      2U
+#define LINE_ALL_ASSIST_CYCLES      4U    /* 80ms */
 
 /*
  * ---- 角点事件：SIDE（直角）与 FORK（锐角）合并处理 ----
@@ -728,7 +736,7 @@
  * 车身轻微偏移就会不断"进入角点"，实测方向乱跳。
  * 改成 2 拍（80ms）保留响应速度，同时滤掉单拍毛刺。
  */
-#define LINE_CORNER_CONFIRM_CYCLES  3U
+#define LINE_CORNER_CONFIRM_CYCLES  6U    /* 6×20ms = 120ms */
 
 /*
  * SIDE 场景当作"角点证据"的最小横向误差。
@@ -754,11 +762,11 @@
  *   2) 反向证据必须连续 N 拍、且距上次锁定 >= HOLD_MS 才允许翻转；
  *   3) commit（承诺转向）期间禁止翻转。
  */
-#define LINE_CORNER_DIR_FLIP_CYCLES     3U
+#define LINE_CORNER_DIR_FLIP_CYCLES     6U    /* 120ms */
 #define LINE_CORNER_DIR_FLIP_HOLD_MS    250U
 
 /* 连续多少拍回到 LINE 才认为出弯（3 拍 = 120ms，防弯心残留宽黑带误释放） */
-#define LINE_CORNER_RELEASE_CYCLES  3U
+#define LINE_CORNER_RELEASE_CYCLES  6U    /* 120ms */
 
 /*
  * 出弯后方向记忆保留多少拍（40ms/拍）。
@@ -770,7 +778,7 @@
  *   只能退回默认方向盲扫 —— 猜对猜错各一半。
  *   保留 15 拍（600ms），让"刚出弯就丢线"这种情况还能用上刚才的方向。
  */
-#define LINE_CORNER_DIR_HOLD_CYCLES 15U
+#define LINE_CORNER_DIR_HOLD_CYCLES 30U   /* 600ms */
 
 /*
  * ---- 锐角弯的"承诺转向" ----
@@ -1009,11 +1017,14 @@
  */
 /*
  * 连续丢线多少拍才进入"原地找线"。
- * 原来 2 拍（80ms）；半圆弯中途偶尔短暂看不到线（接头/遮挡）就会立刻
- * 原地转，看起来像"弯道中途突然原地转向"。放到 5 拍（200ms），
- * 短暂丢线先用正常 PD/惯性冲过去，真丢了再找。
+ *
+ * 历史：2 拍(80ms) 时半圆弯中途偶尔短暂看不到线就立刻原地转，
+ * 表现为"弯道中途突然原地转向"。放到 200ms 后解决。
+ *
+ * 20ms 周期下必须写 10U 才是 200ms —— 写成 5U 只有 100ms，
+ * 实测丢线段最长 160ms，会被误触发原地转。
  */
-#define LINE_LOST_TOLERANCE         5U
+#define LINE_LOST_TOLERANCE         10U
 
 /*
  * 一丢线（还没进入搜索）就把目标速度打这个折扣。
