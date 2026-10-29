@@ -137,7 +137,7 @@ static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
      */
     { "LKP",     0.50f,   0.00f, 30.00f },
     { "LKD",     0.10f,   0.00f, 20.00f },
-    { "LBAS",    1.00f,   0.00f, 55.00f },
+    { "LBAS",    1.00f,   0.00f, 60.00f },
     /*
      * LAP: 比赛自动停车用的一圈周长，单位 cm（步长 10cm）。
      *   0      = 关闭自动停车

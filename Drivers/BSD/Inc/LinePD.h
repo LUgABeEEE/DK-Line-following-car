@@ -272,16 +272,16 @@
  *    有抗饱和保护不会失控，但也跑不到目标值；若发现进弯前刹不住，
  *    先把 LINE_STRAIGHT_BOOST_MAX 降到 0.20（→ 66 cm/s）再试。
  */
-#define LINE_PD_DFLT_BASE_SPEED     55.0f
+#define LINE_PD_DFLT_BASE_SPEED     60.0f
 #define LINE_STRAIGHT_TICKS         4U
-#define LINE_STRAIGHT_BOOST_MAX     0.35f
+#define LINE_STRAIGHT_BOOST_MAX     0.25f
 #define LINE_CORNER_SLOW_MAX        0.62f
 #define LINE_LEAD_WEIGHT            0.60f
 #define LINE_DOWN_RAMP_MULT         1.6f
 
 #else
 /* 均衡（默认；非法值也落到这一档）—— 2026-10 实车调参结果，别轻易动 */
-#define LINE_PD_DFLT_BASE_SPEED     50.0f
+#define LINE_PD_DFLT_BASE_SPEED     55.0f
 #define LINE_STRAIGHT_TICKS         5U
 #define LINE_STRAIGHT_BOOST_MAX     0.30f
 #define LINE_CORNER_SLOW_MAX        0.68f   /* 弧线限速：直道快、弧线慢 */
@@ -504,7 +504,7 @@
  *   配合 LINE_DIFF_LIMIT = 35 时，e 超过 1.75cm 就进入满幅，
  *   相当于"小误差线性、大误差饱和"，对循迹反而很合适。
  */
-#define LINE_PD_DFLT_KP             12.0f
+#define LINE_PD_DFLT_KP             14.0f
 /*
  * 外环微分增益，单位 cm/s 差速量 每 (cm/s) 误差变化率。
  *
