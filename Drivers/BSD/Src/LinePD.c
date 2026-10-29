@@ -128,6 +128,8 @@ void LinePD_Init(Line_PD_t *pd)
     pd->d_filter    = LINE_PD_DFLT_D_FILTER;
     pd->alat_max    = LINE_ALAT_MAX_DFLT;
     pd->wide_steer  = 0U;
+    pd->steer_gain  = 1.0f;
+    pd->steer_out   = 0.0f;
 
     LinePD_Reset(pd);
 }
@@ -920,17 +922,31 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         {
             float e_abs = (error < 0.0f) ? -error : error;
 
-            if (e_abs > LINE_STEER_GAIN_E0_CM)
             {
-                float k = (e_abs - LINE_STEER_GAIN_E0_CM) /
-                          (LINE_STEER_GAIN_E1_CM - LINE_STEER_GAIN_E0_CM);
+                float k = 0.0f;
+                float g_target;
 
-                if (k > 1.0f)
+                if (e_abs > LINE_STEER_GAIN_E0_CM)
                 {
-                    k = 1.0f;
+                    k = (e_abs - LINE_STEER_GAIN_E0_CM) /
+                        (LINE_STEER_GAIN_E1_CM - LINE_STEER_GAIN_E0_CM);
+
+                    if (k > 1.0f)
+                    {
+                        k = 1.0f;
+                    }
                 }
 
-                steer *= (1.0f + (LINE_STEER_GAIN_MAX * k));
+                g_target = 1.0f + (LINE_STEER_GAIN_MAX * k);
+
+                /*
+                 * 增益本身低通：误差抖动时不会立刻放大/收回，
+                 * 只在持续大误差时才爬上去（见 LinePD.h 说明）。
+                 */
+                pd->steer_gain += LINE_STEER_GAIN_LPF *
+                                  (g_target - pd->steer_gain);
+
+                steer *= pd->steer_gain;
             }
         }
 
@@ -1044,6 +1060,20 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         {
             /* 在限制范围内 */
         }
+    }
+
+    /*
+     * 转向输出低通：抑制 2.4Hz 极限环。
+     * assist / 角点事件里是满舵指令，跳过以免削弱转角能力。
+     */
+    if ((assist == 0U) && (pd->all_assist == 0U) && (pd->corner_active == 0U))
+    {
+        pd->steer_out += LINE_STEER_OUT_LPF * (steer - pd->steer_out);
+        steer = pd->steer_out;
+    }
+    else
+    {
+        pd->steer_out = steer;
     }
 
     pd->steer = steer;

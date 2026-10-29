@@ -407,7 +407,21 @@
  * ========================================================================= */
 #define LINE_STEER_GAIN_E0_CM       1.50f   /* 误差低于这个不放大               */
 #define LINE_STEER_GAIN_E1_CM       2.50f   /* 误差到这个值时放大到最大         */
-#define LINE_STEER_GAIN_MAX         0.60f   /* 最多放大 60%                     */
+#define LINE_STEER_GAIN_MAX         0.40f   /* 最多放大 40%                     */
+
+/*
+ * bp 实测：增益瞬时生效导致 2.4Hz 极限环（翻转率 48%，|s| 过零 17.8）。
+ * 修法：增益系数本身做低通，误差抖动时不会跟着抖。
+ *   0.35 的系数 ≈ 3 拍时间常数（120ms）
+ */
+#define LINE_STEER_GAIN_LPF         0.35f
+
+/*
+ * 转向输出低通。
+ * 2.4Hz 振荡的周期约 416ms（10 拍），0.5 的低通相当于 2 拍平均，
+ * 正好把这个频段的幅度削掉一半，同时只带来约 40ms 相位滞后。
+ */
+#define LINE_STEER_OUT_LPF          0.50f
 #define LINE_STEER_SLEW_CMS         22.0f   /* 每周期差速最大变化量 */
 
 /*
@@ -1039,6 +1053,8 @@ typedef struct
     float   last_error;     /* 上一次误差，用于求微分                          */
     float   d_filter_state; /* 微分项滤波状态                                 */
     float   steer;          /* 最近一次差速量，cm/s                           */
+    float   steer_gain;     /* 大误差增益的滤波状态（1.0 ~ 1+GAIN_MAX）       */
+    float   steer_out;      /* 转向输出低通状态，cm/s                         */
     uint8_t wide_steer;     /* 当前是否处于"弯道宽差速"状态（带滞回）         */
     float   speed;          /* 最近一次的目标基础速度，cm/s                   */
     uint8_t straight_ticks; /* 直道连续居中拍数（simple track 直道加速用）             */
