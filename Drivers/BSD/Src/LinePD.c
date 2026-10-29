@@ -1086,7 +1086,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         if ((pd->corner_active == 0U) &&
             (((error < 0.0f) ? -error : error) < LINE_STRAIGHT_EPS_CM) &&
             (((steer < 0.0f) ? -steer : steer) < LINE_STRAIGHT_STEER_CM) &&
-            (depth < 0.30f))
+            (depth < 0.45f))
         {
             if (pd->straight_ticks < LINE_STRAIGHT_TICKS)
             {
