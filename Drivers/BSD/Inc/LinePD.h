@@ -255,25 +255,32 @@
 #define LINE_SIMPLE_PROFILE         1
 
 #if (LINE_SIMPLE_PROFILE == 0)
-/* 保守：宁可慢，先把整圈跑完 */
-#define LINE_PD_DFLT_BASE_SPEED     26.0f   /* 基础速度 cm/s                 */
+/* 保守：弯多、直道短，或新场地第一次上车 */
+#define LINE_PD_DFLT_BASE_SPEED     40.0f   /* 基础速度 cm/s                 */
 #define LINE_STRAIGHT_TICKS         6U      /* 连续居中几拍才开始加速         */
-#define LINE_STRAIGHT_BOOST_MAX     0.15f   /* 直道最多 +15%                 */
-#define LINE_CORNER_SLOW_MAX        0.65f   /* 角点期间的速度上限系数         */
+#define LINE_STRAIGHT_BOOST_MAX     0.15f   /* 直道最多 +15%（→ 46 cm/s）    */
+#define LINE_CORNER_SLOW_MAX        0.70f   /* 角点期间的速度上限系数         */
 #define LINE_LEAD_WEIGHT            0.80f   /* 入弯预判强度（越大越早减速）   */
 #define LINE_DOWN_RAMP_MULT         2.5f    /* 减速斜坡相对加速的倍数         */
 
 #elif (LINE_SIMPLE_PROFILE == 2)
-/* 激进：直道长、弯缓的赛道 */
-#define LINE_PD_DFLT_BASE_SPEED     34.0f
+/*
+ * 激进：直道长、弯缓、抓地好的赛道。
+ *
+ * ⚠️ 天花板提醒：实测电机到约 57 cm/s 就打满占空比，而本档
+ *    55 × (1 + 0.35) = 74 cm/s 明显超过它 —— 直道上 PID 会长时间饱和。
+ *    有抗饱和保护不会失控，但也跑不到目标值；若发现进弯前刹不住，
+ *    先把 LINE_STRAIGHT_BOOST_MAX 降到 0.20（→ 66 cm/s）再试。
+ */
+#define LINE_PD_DFLT_BASE_SPEED     55.0f
 #define LINE_STRAIGHT_TICKS         4U
 #define LINE_STRAIGHT_BOOST_MAX     0.35f
-#define LINE_CORNER_SLOW_MAX        0.82f
+#define LINE_CORNER_SLOW_MAX        0.62f
 #define LINE_LEAD_WEIGHT            0.60f
 #define LINE_DOWN_RAMP_MULT         1.6f
 
 #else
-/* 均衡（默认；非法值也落到这一档） */
+/* 均衡（默认；非法值也落到这一档）—— 2026-10 实车调参结果，别轻易动 */
 #define LINE_PD_DFLT_BASE_SPEED     50.0f
 #define LINE_STRAIGHT_TICKS         5U
 #define LINE_STRAIGHT_BOOST_MAX     0.25f
