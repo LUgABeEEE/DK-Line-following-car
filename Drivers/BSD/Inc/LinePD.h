@@ -208,7 +208,7 @@
  *
  * 代价：钝角弯通过速度会明显变慢。想更激进可以回调到 0.45~0.50。
  */
-#define LINE_CURVE_SLOW_MIN         0.40f
+#define LINE_CURVE_SLOW_MIN         0.45f
 
 /*
  * ---- simple track：简单赛道速度规划（只有弧线/直角的赛道）----
@@ -283,8 +283,8 @@
 /* 均衡（默认；非法值也落到这一档）—— 2026-10 实车调参结果，别轻易动 */
 #define LINE_PD_DFLT_BASE_SPEED     50.0f
 #define LINE_STRAIGHT_TICKS         5U
-#define LINE_STRAIGHT_BOOST_MAX     0.25f
-#define LINE_CORNER_SLOW_MAX        0.62f   /* 弧线限速：直道快、弧线慢 */
+#define LINE_STRAIGHT_BOOST_MAX     0.30f
+#define LINE_CORNER_SLOW_MAX        0.68f   /* 弧线限速：直道快、弧线慢 */
 #define LINE_LEAD_WEIGHT            0.70f
 #define LINE_DOWN_RAMP_MULT         2.0f
 #endif
@@ -480,7 +480,7 @@
  *   SPEED_TEST 有自己的斜坡（SPEED_RAMP_CMS_PER_SEC，按 20ms 节拍），
  *   两者互不影响。
  */
-#define LINE_SPEED_RAMP_CMS_PER_SEC  50.0f
+#define LINE_SPEED_RAMP_CMS_PER_SEC  90.0f
 
 /*
  * 微分低通滤波系数 (0,1]。灰度解算出的位置在探头交界处有固有台阶，
@@ -926,7 +926,7 @@
  * 一丢线（还没进入搜索）就把目标速度打这个折扣。
  * 半圆弧上偶尔有短暂看不到线的地方，降速能提高冲过去/重新咬住线的概率。
  */
-#define LINE_LOST_SLOW_FACTOR       0.70f
+#define LINE_LOST_SLOW_FACTOR       0.85f
 
 /*
  * 丢线超时后是否停车。

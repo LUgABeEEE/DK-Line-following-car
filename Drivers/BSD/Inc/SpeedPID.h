@@ -132,7 +132,7 @@ typedef struct
 #define SPEED_PID_DFLT_KP           0.8f
 #define SPEED_PID_DFLT_KI           1.5f
 #define SPEED_PID_DFLT_KD           0.0f
-#define SPEED_PID_DFLT_KFF          1.0f
+#define SPEED_PID_DFLT_KFF          1.25f
 
 /* ------------------------------------------------------------------------- */
 /* 接口                                                                        */
