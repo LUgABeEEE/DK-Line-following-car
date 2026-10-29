@@ -129,7 +129,7 @@ typedef struct
 #define SPEED_OUTPUT_LIMIT          ((float)MOTOR_DUTY_MAX)
 
 /* 编译期默认增益，改这里即可，也可以用运行时的 Speed_PID_SetGains() 覆盖 */
-#define SPEED_PID_DFLT_KP           0.8f
+#define SPEED_PID_DFLT_KP           1.4f
 #define SPEED_PID_DFLT_KI           1.5f
 #define SPEED_PID_DFLT_KD           0.0f
 #define SPEED_PID_DFLT_KFF          1.25f

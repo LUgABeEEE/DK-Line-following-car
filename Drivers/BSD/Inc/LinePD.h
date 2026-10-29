@@ -504,7 +504,7 @@
  *   配合 LINE_DIFF_LIMIT = 35 时，e 超过 1.75cm 就进入满幅，
  *   相当于"小误差线性、大误差饱和"，对循迹反而很合适。
  */
-#define LINE_PD_DFLT_KP             14.0f
+#define LINE_PD_DFLT_KP             16.0f
 /*
  * 外环微分增益，单位 cm/s 差速量 每 (cm/s) 误差变化率。
  *
