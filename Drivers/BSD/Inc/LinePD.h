@@ -352,7 +352,7 @@
  */
 #define LINE_LOOKAHEAD_THETA_MIN    0.15f   /* rad，约 8.6°                    */
 #define LINE_LOOKAHEAD_THETA_MAX    0.70f   /* rad，约 40°                     */
-#define LINE_LOOKAHEAD_DROP         0.50f   /* 最多降 50% 基速                 */
+#define LINE_LOOKAHEAD_DROP         0.35f   /* 最多降 35% 基速                 */
 #define LINE_CURVE_ERR_DEADBAND     0.45f   /* 曲率模式下：|e|/err_max 超过这个才兜底减速 */
 #define LINE_CURVE_FALLBACK_SLOW_MIN 0.42f  /* 曲率模式下兜底减速的最低系数   */
 #define LINE_THETA_MAX_RAD          0.70f   /* θ 限幅（约 40°） */
@@ -664,6 +664,30 @@
  *   LINE_CORNER_RELEASE_CYCLES：出弯确认拍数，40ms/拍。
  */
 #define LINE_CORNER_DIFF_BOOST      1.35f
+
+/* =========================================================================
+ * 弯道宽差速（让内侧轮真正停转）
+ *
+ * 数据（bn，463 样本，按内侧轮状态分组看 3 拍后 |e|）：
+ *   内侧反转(<0) : |e| 2.50 -> 1.15
+ *   内侧停转(0~5): |e| 2.15 -> 0.90   <- 收益与反转几乎相同
+ *   内侧慢转(5~20): |e| 1.90 -> 1.25   <- 就差在这一档
+ *   内侧正常(>20): |e| 0.85 -> 1.20
+ *
+ * 结论：不需要主动反转（TB6612 死区 + 电流冲击），
+ *       只要把内侧轮从"慢转"拉到"停转"就能拿到绝大部分收益。
+ *
+ * 限制：差速上限 35cm/s，车速 55 时内侧轮只能到 20（慢转）。
+ * 所以弯道/大误差时把差速上限放宽到 LINE_DIFF_WIDE_LIMIT，
+ * 直道仍用 35，避免画龙。
+ *
+ * 滞回：|e| >= ENTER 才进入宽差速，|e| < EXIT 才退出，
+ *       防止直道上一帧抖动就把方向打满。
+ * ========================================================================= */
+#define LINE_DIFF_WIDE_LIMIT        60.0f   /* 弯道差速上限 cm/s（车速 55 时内侧=0）*/
+#define LINE_DIFF_WIDE_ENTER_CM     1.50f   /* |e| 超过这个进入宽差速               */
+#define LINE_DIFF_WIDE_EXIT_CM      1.00f   /* |e| 低于这个退出宽差速               */
+#define LINE_DIFF_WIDE_THETA_RAD    0.30f   /* 或线角超过这个也进入宽差速           */
 
 /* 进入角点事件需要连续多少拍（Gray 已做帧级防抖，这里只需再确认 1 拍） */
 /*
@@ -996,6 +1020,7 @@ typedef struct
     float   last_error;     /* 上一次误差，用于求微分                          */
     float   d_filter_state; /* 微分项滤波状态                                 */
     float   steer;          /* 最近一次差速量，cm/s                           */
+    uint8_t wide_steer;     /* 当前是否处于"弯道宽差速"状态（带滞回）         */
     float   speed;          /* 最近一次的目标基础速度，cm/s                   */
     uint8_t straight_ticks; /* 直道连续居中拍数（simple track 直道加速用）             */
     float   speed_boost;    /* 直道加速系数，0 ~ LINE_STRAIGHT_BOOST_MAX              */

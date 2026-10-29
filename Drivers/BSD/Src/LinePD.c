@@ -127,6 +127,7 @@ void LinePD_Init(Line_PD_t *pd)
     pd->speed_limit = LINE_SPEED_LIMIT;
     pd->d_filter    = LINE_PD_DFLT_D_FILTER;
     pd->alat_max    = LINE_ALAT_MAX_DFLT;
+    pd->wide_steer  = 0U;
 
     LinePD_Reset(pd);
 }
@@ -963,6 +964,34 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
          * 转向输出在时间上是连续的。
          */
         float steer_limit = pd->diff_limit;
+        float e_abs = (error < 0.0f) ? -error : error;
+        float th_abs = (pd->theta_rad < 0.0f) ? -pd->theta_rad : pd->theta_rad;
+
+        /*
+         * 弯道宽差速：带滞回，避免直道抖动触发。
+         *   进入：|e| >= ENTER 或 |θ| >= THETA
+         *   退出：|e| <  EXIT
+         */
+        if (pd->wide_steer == 0U)
+        {
+            if ((e_abs >= LINE_DIFF_WIDE_ENTER_CM) ||
+                (th_abs >= LINE_DIFF_WIDE_THETA_RAD))
+            {
+                pd->wide_steer = 1U;
+            }
+        }
+        else
+        {
+            if (e_abs < LINE_DIFF_WIDE_EXIT_CM)
+            {
+                pd->wide_steer = 0U;
+            }
+        }
+
+        if (pd->wide_steer != 0U)
+        {
+            steer_limit = LINE_DIFF_WIDE_LIMIT;
+        }
 
         if (pd->corner_active != 0U)
         {
