@@ -1086,7 +1086,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         if ((pd->corner_active == 0U) &&
             (((error < 0.0f) ? -error : error) < LINE_STRAIGHT_EPS_CM) &&
             (((steer < 0.0f) ? -steer : steer) < LINE_STRAIGHT_STEER_CM) &&
-            (depth < 0.45f))
+            (depth < 0.30f))
         {
             if (pd->straight_ticks < LINE_STRAIGHT_TICKS)
             {
@@ -1144,6 +1144,36 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             if (target_speed > pd->speed_limit)
             {
                 target_speed = pd->speed_limit;
+            }
+
+            /*
+             * 进弯预判限速：用线角 θ 提前减速，不等陀螺测到 ω。
+             * θ 只在线、非角点事件时有意义（角点/全黑时会被清零）。
+             */
+            if ((pd->corner_active == 0U) && (assist == 0U) && (pd->all_assist == 0U))
+            {
+                float th = (pd->theta_rad < 0.0f) ? -pd->theta_rad : pd->theta_rad;
+
+                if (th > LINE_LOOKAHEAD_THETA_MIN)
+                {
+                    float over = (th - LINE_LOOKAHEAD_THETA_MIN) /
+                                 (LINE_LOOKAHEAD_THETA_MAX - LINE_LOOKAHEAD_THETA_MIN);
+
+                    if (over > 1.0f)
+                    {
+                        over = 1.0f;
+                    }
+
+                    {
+                        float v_cap2 = pd->base_speed *
+                                       (1.0f - (LINE_LOOKAHEAD_DROP * over));
+
+                        if (v_cap2 < target_speed)
+                        {
+                            target_speed = v_cap2;
+                        }
+                    }
+                }
             }
 
 #if (LINE_CURVE_SPEED_MODE != 0)

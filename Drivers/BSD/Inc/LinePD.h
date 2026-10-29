@@ -229,8 +229,8 @@
 #define LINE_LEAD_DERR_MAX          80.0f
 
 /* 直道加速的判定门槛：误差、差速、每拍增量（这三项与档位无关） */
-#define LINE_STRAIGHT_EPS_CM        0.80f
-#define LINE_STRAIGHT_STEER_CM      12.0f
+#define LINE_STRAIGHT_EPS_CM        0.35f
+#define LINE_STRAIGHT_STEER_CM      8.0f
 #define LINE_STRAIGHT_BOOST_STEP    0.03f
 #define LINE_BOOST_DECAY_STEP       0.06f
 
@@ -337,8 +337,24 @@
 #define LINE_CURVE_SPEED_MODE       1       /* 1=曲率限速  0=旧误差限速        */
 #define LINE_ALAT_MAX_DFLT          85.0f   /* 默认允许侧向加速度 cm/s²（实测最优）*/
 #define LINE_CURVE_W_MIN_DPS        12.0f   /* 小于这个角速度视为直道，不限制  */
-#define LINE_CURVE_ERR_DEADBAND     0.60f   /* 曲率模式下：|e|/err_max 超过这个才兜底减速 */
-#define LINE_CURVE_FALLBACK_SLOW_MIN 0.55f  /* 曲率模式下兜底减速的最低系数   */
+
+/*
+ * 进弯预判减速（用线角 θ，比陀螺早 0.2~0.3 秒）。
+ *
+ * 陀螺曲率限速是"反应式"的：车必须在转、ω 起来了才降速，
+ * 实测 12cm 半径的小半弯，车以 40cm/s 冲进去需要 a_lat=133cm/s²，
+ * 远超能力 -> 甩出 -> 丢线 -> 原地转 -> 视觉上"跑一下停一下"。
+ *
+ * 线角 θ 在进弯前就会变大，用它提前把速度压下来。
+ *   |θ| <= LINE_LOOKAHEAD_THETA_MIN      不减速
+ *   |θ| >= LINE_LOOKAHEAD_THETA_MAX      降到 (1 - LINE_LOOKAHEAD_DROP)
+ * 中间线性插值。
+ */
+#define LINE_LOOKAHEAD_THETA_MIN    0.15f   /* rad，约 8.6°                    */
+#define LINE_LOOKAHEAD_THETA_MAX    0.70f   /* rad，约 40°                     */
+#define LINE_LOOKAHEAD_DROP         0.50f   /* 最多降 50% 基速                 */
+#define LINE_CURVE_ERR_DEADBAND     0.45f   /* 曲率模式下：|e|/err_max 超过这个才兜底减速 */
+#define LINE_CURVE_FALLBACK_SLOW_MIN 0.42f  /* 曲率模式下兜底减速的最低系数   */
 #define LINE_THETA_MAX_RAD          0.70f   /* θ 限幅（约 40°） */
 #define LINE_THETA_LPF              0.50f   /* θ 低通系数 */
 #define LINE_POS_LPF_ALPHA          0.50f   /* 位置低通系数 */
@@ -475,7 +491,7 @@
  *     周期改成 20ms（dt 变小）          -> 同样的 KD 变得更凶，必须调小
  *   改外环周期后如果出现抖动，第一个要怀疑的就是 KD。
  */
-#define LINE_PD_DFLT_KD             1.2f
+#define LINE_PD_DFLT_KD             1.6f
 
 /*
  * 基础速度由上面的「赛道档位」决定（LINE_SIMPLE_PROFILE）：
