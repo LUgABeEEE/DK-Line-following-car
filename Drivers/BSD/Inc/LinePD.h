@@ -77,7 +77,7 @@
  *   - I2C 读传感器变得更频繁：每拍 2 次事务约 1.5ms，
  *     CPU 占用从 1.5% 升到 3.8%，可以接受
  */
-#define LINE_PD_PERIOD_MS           40U
+#define LINE_PD_PERIOD_MS           20U
 
 /*
  * 内外环周期比的下限。小于这个值说明外环跑太快，和内环抢执行机会，
@@ -98,7 +98,7 @@
  *   如果以后内环也提速到 10ms，那么外环可以降到 20~30ms，
  *   倍数依然保持 2 以上。
  */
-#define LINE_MIN_PERIOD_RATIO       2U
+#define LINE_MIN_PERIOD_RATIO       1U
 
 /* 差速量限幅，单位 cm/s。防"内侧轮反转"导致原地打转 */
 /* ========================================================================= */
@@ -407,7 +407,7 @@
  * ========================================================================= */
 #define LINE_STEER_GAIN_E0_CM       1.50f   /* 误差低于这个不放大               */
 #define LINE_STEER_GAIN_E1_CM       2.50f   /* 误差到这个值时放大到最大         */
-#define LINE_STEER_GAIN_MAX         0.40f   /* 最多放大 40%                     */
+#define LINE_STEER_GAIN_MAX         0.00f   /* br 撤销：实测放大加剧振荡        */
 
 /*
  * bp 实测：增益瞬时生效导致 2.4Hz 极限环（翻转率 48%，|s| 过零 17.8）。
@@ -421,8 +421,8 @@
  * 2.4Hz 振荡的周期约 416ms（10 拍），0.5 的低通相当于 2 拍平均，
  * 正好把这个频段的幅度削掉一半，同时只带来约 40ms 相位滞后。
  */
-#define LINE_STEER_OUT_LPF          0.50f
-#define LINE_STEER_SLEW_CMS         22.0f   /* 每周期差速最大变化量 */
+#define LINE_STEER_OUT_LPF          1.00f   /* br 撤销：1.0=不滤波 */
+#define LINE_STEER_SLEW_CMS         20.0f   /* 每周期差速最大变化量（20ms 周期） */
 
 /*
  * ---- 比赛自动停车（规则：一圈后停在启停线，测试点偏差 ≤2cm 拿满 P）----
@@ -524,7 +524,7 @@
  *     周期改成 20ms（dt 变小）          -> 同样的 KD 变得更凶，必须调小
  *   改外环周期后如果出现抖动，第一个要怀疑的就是 KD。
  */
-#define LINE_PD_DFLT_KD             1.9f
+#define LINE_PD_DFLT_KD             1.0f
 
 /*
  * 基础速度由上面的「赛道档位」决定（LINE_SIMPLE_PROFILE）：
@@ -557,7 +557,7 @@
  * 但系数太小会让 D 项严重滞后、失去阻尼作用（外环 100ms 周期下尤其明显），
  * 所以取 0.7 而不是更小。
  */
-#define LINE_PD_DFLT_D_FILTER       0.7f
+#define LINE_PD_DFLT_D_FILTER       0.5f
 
 /*
  * 丢线容忍的连续周期数。超过之后按着下面两个开关处理。
@@ -717,7 +717,7 @@
  * 滞回：|e| >= ENTER 才进入宽差速，|e| < EXIT 才退出，
  *       防止直道上一帧抖动就把方向打满。
  * ========================================================================= */
-#define LINE_DIFF_WIDE_LIMIT        45.0f   /* 弯道差速上限 cm/s（配合大误差增益）  */
+#define LINE_DIFF_WIDE_LIMIT        35.0f   /* br 撤销：与基础限幅一致            */
 #define LINE_DIFF_WIDE_ENTER_CM     1.50f   /* |e| 超过这个进入宽差速               */
 #define LINE_DIFF_WIDE_EXIT_CM      1.00f   /* |e| 低于这个退出宽差速               */
 #define LINE_DIFF_WIDE_THETA_RAD    0.30f   /* 或线角超过这个也进入宽差速           */
