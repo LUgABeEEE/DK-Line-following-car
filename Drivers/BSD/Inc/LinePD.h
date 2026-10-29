@@ -318,7 +318,27 @@
  * 量化传感器不划算，噪声占比太高；先关掉，只保留位置低通 + yaw 阻尼）。
  * 需要重新启用时改为 0.8，并按死区/斜坡/限幅一起观察。
  */
-#define LINE_THETA_FF_GAIN          0.90f   /* 前馈增益（× v × θ），0=关 */
+#define LINE_THETA_FF_GAIN          1.15f   /* 前馈增益（× v × θ），0=关 */
+
+/* =========================================================================
+ * 曲率限速（用陀螺估曲率，替代"误差驱动"的减速）
+ *
+ * 原理：车在转弯时，陀螺测到的横摆角速度 ω 与车速 v 满足
+ *          κ = ω / v          （曲率，单位 1/cm）
+ *       允许的最大侧向加速度 a_lat 决定了过这个弯的速度上限：
+ *          a_lat = v² · κ   =>   v_max = sqrt(a_lat / κ)
+ *
+ * 与"误差驱动"的区别：
+ *   误差驱动：车偏了才减速（滞后，且缓弯也会被误减速）
+ *   曲率驱动：一进弯就按实际半径给速度（提前，缓弯跑得快、急弯才慢）
+ *
+ * 陀螺没接好时自动退化为原来的误差驱动（见 LinePD.c）。
+ * ========================================================================= */
+#define LINE_CURVE_SPEED_MODE       1       /* 1=曲率限速  0=旧误差限速        */
+#define LINE_ALAT_MAX_DFLT          100.0f  /* 默认允许侧向加速度 cm/s²（0.1g）*/
+#define LINE_CURVE_W_MIN_DPS        12.0f   /* 小于这个角速度视为直道，不限制  */
+#define LINE_CURVE_ERR_DEADBAND     0.60f   /* 曲率模式下：|e|/err_max 超过这个才兜底减速 */
+#define LINE_CURVE_FALLBACK_SLOW_MIN 0.55f  /* 曲率模式下兜底减速的最低系数   */
 #define LINE_THETA_MAX_RAD          0.70f   /* θ 限幅（约 40°） */
 #define LINE_THETA_LPF              0.50f   /* θ 低通系数 */
 #define LINE_POS_LPF_ALPHA          0.50f   /* 位置低通系数 */
@@ -348,7 +368,7 @@
  *    计量，转够就停，不再依赖打滑的轮速积分。
  */
 #define LINE_USE_IMU_YAW            1
-#define LINE_YAW_DAMP_GAIN          0.12f   /* cm/s per (°/s) */
+#define LINE_YAW_DAMP_GAIN          0.03f   /* cm/s per (°/s) */
 #define LINE_YAW_DAMP_MAX_CMS       8.0f    /* 阻尼项限幅 */
 
 #define LINE_KP_SPEED_REF_CMS       30.0f   /* 参考速度，低于它不缩放 */
@@ -953,6 +973,7 @@ typedef struct
     float diff_limit;       /* 差速量限幅，cm/s                               */
     float speed_limit;      /* 目标速度限幅，cm/s                             */
     float d_filter;         /* 微分低通系数 (0,1]                             */
+    float alat_max;         /* 曲率限速用：允许的最大侧向加速度 cm/s²         */
 
     /* ---- 运行状态：由 Init/Reset 维护 ---- */
     float   error;          /* 最近一次误差，cm（左正右负）                   */

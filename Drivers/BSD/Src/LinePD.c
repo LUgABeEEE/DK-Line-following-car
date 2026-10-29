@@ -21,6 +21,7 @@
 #include "LinePD.h"
 #include "Encoder.h"        /* 自动停车要用累计里程 */
 #include "MPU6050.h"        /* 陀螺航向 / yaw 阻尼 */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -125,6 +126,7 @@ void LinePD_Init(Line_PD_t *pd)
     pd->diff_limit  = LINE_DIFF_LIMIT;
     pd->speed_limit = LINE_SPEED_LIMIT;
     pd->d_filter    = LINE_PD_DFLT_D_FILTER;
+    pd->alat_max    = LINE_ALAT_MAX_DFLT;
 
     LinePD_Reset(pd);
 }
@@ -1040,6 +1042,27 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             d_norm = 1.0f;
         }
 
+#if (LINE_CURVE_SPEED_MODE != 0)
+        /*
+         * 曲率模式：速度主要由后面的"曲率限速"决定（按实际弯道半径给速度）。
+         * 这里只保留一个【安全兜底】：误差已经大到快丢线时才减速，
+         * 平时不让 |e| 参与降速 —— 否则缓弯也会被误减速，速度上不去。
+         */
+        (void)s_norm;
+        (void)d_norm;
+        depth = e_norm;
+        if (depth <= LINE_CURVE_ERR_DEADBAND)
+        {
+            slow_factor = 1.0f;
+        }
+        else
+        {
+            float over = (depth - LINE_CURVE_ERR_DEADBAND) /
+                         (1.0f - LINE_CURVE_ERR_DEADBAND);
+
+            slow_factor = 1.0f - (over * (1.0f - LINE_CURVE_FALLBACK_SLOW_MIN));
+        }
+#else
         depth = (LINE_DEPTH_W_ERR * e_norm) + (LINE_DEPTH_W_STEER * s_norm);
         if ((LINE_LEAD_WEIGHT * d_norm) > depth)
         {
@@ -1051,6 +1074,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         }
 
         slow_factor = 1.0f - (depth * (1.0f - LINE_CURVE_SLOW_MIN));
+#endif
 
         /* 角点事件期间再压一档：直角/锐角宁可慢一点，也不要冲过头 */
         if ((pd->corner_active != 0U) && (slow_factor > LINE_CORNER_SLOW_MAX))
@@ -1121,6 +1145,34 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             {
                 target_speed = pd->speed_limit;
             }
+
+#if (LINE_CURVE_SPEED_MODE != 0)
+            /*
+             * 曲率限速：v_max = sqrt(a_lat_max / κ)，κ = |ω| / v
+             *   =>  v_max = sqrt(a_lat_max · v / |ω|)
+             * 用当前实测车速 pd->speed 反推，陀螺没就绪时自动跳过。
+             */
+            if ((MPU6050_IsReady() != 0U) && (pd->speed > 5.0f))
+            {
+                float w_dps = MPU6050_GetYawRateDps();
+
+                if (w_dps < 0.0f)
+                {
+                    w_dps = -w_dps;
+                }
+
+                if (w_dps > LINE_CURVE_W_MIN_DPS)
+                {
+                    float omega = w_dps * 0.0174533f;        /* deg/s -> rad/s */
+                    float v_cap = sqrtf(pd->alat_max * pd->speed / omega);
+
+                    if (v_cap < target_speed)
+                    {
+                        target_speed = v_cap;
+                    }
+                }
+            }
+#endif
 
             if (pd->speed < target_speed)
             {

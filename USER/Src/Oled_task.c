@@ -78,7 +78,8 @@ typedef struct
 #define TUNE_IDX_LKD        9U
 #define TUNE_IDX_LBAS       10U
 #define TUNE_IDX_LAP        11U     /* 比赛自动停车：一圈周长 cm */
-#define TUNE_PARAM_COUNT    12U
+#define TUNE_IDX_ALAT       12U     /* 曲率限速：允许最大侧向加速度 */
+#define TUNE_PARAM_COUNT    13U
 
 static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
 {
@@ -146,6 +147,16 @@ static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
      * 之所以用 10cm 步长：周长是几百上千厘米，1cm 步长要按几百次。
      */
     { "LAP",    10.00f,   0.00f, 3000.00f },
+    /*
+     * ALAT: 曲率限速允许的最大侧向加速度，单位 cm/s²（步长 5）。
+     *   100 = 0.1g，实测参考值：
+     *     R=111cm -> v_max 105 cm/s
+     *     R= 41cm -> v_max  64 cm/s
+     *     R= 20cm -> v_max  45 cm/s
+     *     R= 11cm -> v_max  33 cm/s
+     * 调大 = 弧线更快（可能甩出）；调小 = 更保守。
+     */
+    { "ALAT",   5.00f,  30.00f,  200.00f },
 };
 
 /* ------------------------------------------------------------------------- */
@@ -242,6 +253,10 @@ static float OledTask_ReadParam(uint8_t idx)
     {
         return g_line_pd.base_speed;
     }
+    if (idx == TUNE_IDX_ALAT)
+    {
+        return g_line_pd.alat_max;
+    }
 
     /* 左右轮参数始终同步，读 A 的就行 */
     return Speed_PID_GetGain(MOTOR_A, idx);
@@ -325,6 +340,13 @@ static void OledTask_WriteParam(uint8_t idx, float value)
          * 跑起来。现在两者彻底解耦：SPD 的速度只由 TARGET 参数控制。
          */
         g_line_pd.base_speed = value;
+        return;
+    }
+
+    if (idx == TUNE_IDX_ALAT)
+    {
+        /* 曲率限速的侧向加速度上限，实时生效，不用重烧 */
+        g_line_pd.alat_max = value;
         return;
     }
 
