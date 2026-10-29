@@ -912,6 +912,29 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         steer = (kp_eff * error) + (pd->kd * derivative);
 
         /*
+         * 大误差转向增益：误差大到一定程度后放大差速，
+         * 否则 Kp 速度缩放会把转向能力压死（见 LinePD.h 说明）。
+         * assist / 角点事件里已经是满舵，不再放大。
+         */
+        if ((assist == 0U) && (pd->all_assist == 0U) && (pd->corner_active == 0U))
+        {
+            float e_abs = (error < 0.0f) ? -error : error;
+
+            if (e_abs > LINE_STEER_GAIN_E0_CM)
+            {
+                float k = (e_abs - LINE_STEER_GAIN_E0_CM) /
+                          (LINE_STEER_GAIN_E1_CM - LINE_STEER_GAIN_E0_CM);
+
+                if (k > 1.0f)
+                {
+                    k = 1.0f;
+                }
+
+                steer *= (1.0f + (LINE_STEER_GAIN_MAX * k));
+            }
+        }
+
+        /*
          * 线角前馈：只在线、不在角点事件、不在 assist 时叠加，
          * 避免直角/全黑时把角度估计的毛刺放大。
          */

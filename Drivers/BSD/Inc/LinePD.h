@@ -388,7 +388,26 @@
 #define LINE_YAW_DAMP_MAX_CMS       8.0f    /* 阻尼项限幅 */
 
 #define LINE_KP_SPEED_REF_CMS       30.0f   /* 参考速度，低于它不缩放 */
-#define LINE_KP_MIN_SCALE           0.55f   /* 高速时 Kp 最低缩到 55% */
+#define LINE_KP_MIN_SCALE           0.70f   /* 高速时 Kp 最低缩到 70% */
+
+/* =========================================================================
+ * 大误差转向增益（bo 实测结论）
+ *
+ * bo 把差速限幅从 35 放到 60，但实测 |s| 最大只有 42.1、>45 占比 0%：
+ *   -> 限幅根本不是瓶颈，PD 输出本身到不了 60。
+ *
+ * 原因：Kp 随速度缩放。kp=12、车速 55 时 kp_eff = 12×30/55 = 6.55，
+ *       |e|=2.5 时 steer 只有 16cm/s；实测 |s|/|e| 中位 9.4。
+ *       -> 误差打满也给不出足够差速，内侧轮只能"慢转"不能"停转"。
+ *
+ * 这里在误差超过阈值后，把差速整体放大（带线性过渡，避免阶跃）：
+ *   |e| <= GAIN_E0        -> ×1.0
+ *   |e| >= GAIN_E1        -> ×(1+GAIN_MAX)
+ *   |e|=2.5 时约 ×1.6，steer 22.6 -> 36，内侧轮 55-36 ≈ 19 -> 停转区
+ * ========================================================================= */
+#define LINE_STEER_GAIN_E0_CM       1.50f   /* 误差低于这个不放大               */
+#define LINE_STEER_GAIN_E1_CM       2.50f   /* 误差到这个值时放大到最大         */
+#define LINE_STEER_GAIN_MAX         0.60f   /* 最多放大 60%                     */
 #define LINE_STEER_SLEW_CMS         22.0f   /* 每周期差速最大变化量 */
 
 /*
@@ -491,7 +510,7 @@
  *     周期改成 20ms（dt 变小）          -> 同样的 KD 变得更凶，必须调小
  *   改外环周期后如果出现抖动，第一个要怀疑的就是 KD。
  */
-#define LINE_PD_DFLT_KD             1.6f
+#define LINE_PD_DFLT_KD             1.9f
 
 /*
  * 基础速度由上面的「赛道档位」决定（LINE_SIMPLE_PROFILE）：
@@ -684,7 +703,7 @@
  * 滞回：|e| >= ENTER 才进入宽差速，|e| < EXIT 才退出，
  *       防止直道上一帧抖动就把方向打满。
  * ========================================================================= */
-#define LINE_DIFF_WIDE_LIMIT        60.0f   /* 弯道差速上限 cm/s（车速 55 时内侧=0）*/
+#define LINE_DIFF_WIDE_LIMIT        45.0f   /* 弯道差速上限 cm/s（配合大误差增益）  */
 #define LINE_DIFF_WIDE_ENTER_CM     1.50f   /* |e| 超过这个进入宽差速               */
 #define LINE_DIFF_WIDE_EXIT_CM      1.00f   /* |e| 低于这个退出宽差速               */
 #define LINE_DIFF_WIDE_THETA_RAD    0.30f   /* 或线角超过这个也进入宽差速           */
