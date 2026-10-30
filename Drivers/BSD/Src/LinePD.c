@@ -1658,11 +1658,11 @@ void LinePD_VerifySigns(Line_PD_t *pd, Gray_Sensor_t *gray,
         {
             verdict = "LINE LOST";
         }
-        else if (error > 0.5f)
+        else if (error > 0.82f)
         {
             verdict = "LEFT  (sign ok if line is left)";
         }
-        else if (error < -0.5f)
+        else if (error < -0.82f)
         {
             verdict = "RIGHT (sign ok if line is right)";
         }

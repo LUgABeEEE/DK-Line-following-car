@@ -326,7 +326,7 @@
  * 量化传感器不划算，噪声占比太高；先关掉，只保留位置低通 + yaw 阻尼）。
  * 需要重新启用时改为 0.8，并按死区/斜坡/限幅一起观察。
  */
-#define LINE_THETA_FF_GAIN          1.15f   /* 前馈增益（× v × θ），0=关 */
+#define LINE_THETA_FF_GAIN          0.70f   /* 前馈增益（× v × θ），0=关；=1.15/1.643 */
 
 /* =========================================================================
  * 曲率限速（用陀螺估曲率，替代"误差驱动"的减速）
@@ -358,12 +358,12 @@
  *   |θ| >= LINE_LOOKAHEAD_THETA_MAX      降到 (1 - LINE_LOOKAHEAD_DROP)
  * 中间线性插值。
  */
-#define LINE_LOOKAHEAD_THETA_MIN    0.15f   /* rad，约 8.6°                    */
-#define LINE_LOOKAHEAD_THETA_MAX    0.70f   /* rad，约 40°                     */
+#define LINE_LOOKAHEAD_THETA_MIN    0.25f   /* rad；=0.15×1.643（新标定）      */
+#define LINE_LOOKAHEAD_THETA_MAX    1.15f   /* rad；=0.70×1.643（新标定）      */
 #define LINE_LOOKAHEAD_DROP         0.35f   /* 最多降 35% 基速                 */
 #define LINE_CURVE_ERR_DEADBAND     0.45f   /* 曲率模式下：|e|/err_max 超过这个才兜底减速 */
 #define LINE_CURVE_FALLBACK_SLOW_MIN 0.42f  /* 曲率模式下兜底减速的最低系数   */
-#define LINE_THETA_MAX_RAD          0.70f   /* θ 限幅（约 40°） */
+#define LINE_THETA_MAX_RAD          1.15f   /* θ 限幅；=0.70×1.643（新标定） */
 #define LINE_THETA_LPF              0.50f   /* θ 低通系数 */
 #define LINE_POS_LPF_ALPHA          0.50f   /* 位置低通系数 */
 
@@ -374,7 +374,7 @@
  *   2) 斜坡限幅：前馈每拍最多变化多少，杜绝"一拍打满"；
  *   3) 输出限幅：前馈最多占差速上限的多少（它只是辅助，不该主导转向）。
  */
-#define LINE_THETA_DEADBAND         0.04f   /* rad，约 2.3° */
+#define LINE_THETA_DEADBAND         0.066f  /* rad；=0.04×1.643（新标定） */
 #define LINE_THETA_FF_SLEW_CMS      1.0f    /* 每拍(20ms)前馈变化上限 cm/s = 50cm/s² */
 #define LINE_THETA_FF_CLAMP_RATIO   0.35f   /* 前馈 <= 0.35 × 差速上限 */
 
@@ -449,7 +449,7 @@
 #define LINE_RACE_ARM_FRAC          0.50f   /* 跑过半圈才允许识别启停线 */
 #define LINE_RACE_DETECT_CHANNELS   6U      /* 8 路里至少几路全黑 */
 #define LINE_RACE_PULSE_MAX         3U      /* 全黑持续超过这么多拍 = 角点，不算 */
-#define LINE_RACE_DETECT_ERR_CM     2.0f    /* =1.2cm(旧标定)×1.643 */
+#define LINE_RACE_DETECT_ERR_CM     1.97f   /* =1.2cm(旧标定)×1.643 */
 #define LINE_RACE_APPROACH_CMS      12.0f   /* 识别后的接近速度 */
 /*
  * 到点前多少厘米开始硬刹。
@@ -859,7 +859,7 @@
  * 直角不要转太大：转多了出弯腿会落到车身后方，只能靠反向搜索找回来。
  */
 #define LINE_RIGHT_ANGLE_TURN_DEG    90.0f
-#define LINE_RIGHT_ANGLE_MIN_ERR_CM  2.0f   /* =1.2cm(旧标定)×1.643 */
+#define LINE_RIGHT_ANGLE_MIN_ERR_CM  1.97f  /* =1.2cm(旧标定)×1.643 */
 
 /*
  * 角点期间遇到 ALL（整片全黑）时，改用锁存方向满舵。
