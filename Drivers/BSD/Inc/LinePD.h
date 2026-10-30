@@ -343,7 +343,7 @@
  * 陀螺没接好时自动退化为原来的误差驱动（见 LinePD.c）。
  * ========================================================================= */
 #define LINE_CURVE_SPEED_MODE       1       /* 1=曲率限速  0=旧误差限速        */
-#define LINE_ALAT_MAX_DFLT          85.0f   /* 默认允许侧向加速度 cm/s²（实测最优）*/
+#define LINE_ALAT_MAX_DFLT          100.0f  /* 默认允许侧向加速度 cm/s² */
 #define LINE_CURVE_W_MIN_DPS        12.0f   /* 小于这个角速度视为直道，不限制  */
 
 /*
@@ -360,7 +360,7 @@
  */
 #define LINE_LOOKAHEAD_THETA_MIN    0.25f   /* rad；=0.15×1.643（新标定）      */
 #define LINE_LOOKAHEAD_THETA_MAX    1.15f   /* rad；=0.70×1.643（新标定）      */
-#define LINE_LOOKAHEAD_DROP         0.35f   /* 最多降 35% 基速                 */
+#define LINE_LOOKAHEAD_DROP         0.20f   /* 最多降 20% 基速                 */
 #define LINE_CURVE_ERR_DEADBAND     0.45f   /* 曲率模式下：|e|/err_max 超过这个才兜底减速 */
 #define LINE_CURVE_FALLBACK_SLOW_MIN 0.42f  /* 曲率模式下兜底减速的最低系数   */
 #define LINE_THETA_MAX_RAD          1.15f   /* θ 限幅；=0.70×1.643（新标定） */
@@ -392,7 +392,7 @@
  *    计量，转够就停，不再依赖打滑的轮速积分。
  */
 #define LINE_USE_IMU_YAW            1
-#define LINE_YAW_DAMP_GAIN          0.07f   /* cm/s per (°/s) */
+#define LINE_YAW_DAMP_GAIN          0.03f   /* cm/s per (°/s) */
 #define LINE_YAW_DAMP_MAX_CMS       8.0f    /* 阻尼项限幅 */
 
 #define LINE_KP_SPEED_REF_CMS       30.0f   /* 参考速度，低于它不缩放 */
@@ -415,7 +415,7 @@
  * ========================================================================= */
 #define LINE_STEER_GAIN_E0_CM       2.46f   /* =1.50×1.643（新标定）            */
 #define LINE_STEER_GAIN_E1_CM       4.11f   /* =2.50×1.643（新标定）            */
-#define LINE_STEER_GAIN_MAX         0.00f   /* br 撤销：实测放大加剧振荡        */
+#define LINE_STEER_GAIN_MAX         0.00f   /* ⚠️当前无效：br 撤销（实测加剧振荡）*/
 
 /*
  * bp 实测：增益瞬时生效导致 2.4Hz 极限环（翻转率 48%，|s| 过零 17.8）。
@@ -429,8 +429,8 @@
  * 2.4Hz 振荡的周期约 416ms（10 拍），0.5 的低通相当于 2 拍平均，
  * 正好把这个频段的幅度削掉一半，同时只带来约 40ms 相位滞后。
  */
-#define LINE_STEER_OUT_LPF          1.00f   /* br 撤销：1.0=不滤波 */
-#define LINE_STEER_SLEW_CMS         20.0f   /* 每周期差速最大变化量（20ms 周期） */
+#define LINE_STEER_OUT_LPF          1.00f   /* ⚠️当前无效：1.0=不滤波（bq 撤销）*/
+#define LINE_STEER_SLEW_CMS         26.0f   /* 每周期差速最大变化量（20ms 周期） */
 
 /*
  * ---- 比赛自动停车（规则：一圈后停在启停线，测试点偏差 ≤2cm 拿满 P）----
@@ -512,7 +512,7 @@
  *   配合 LINE_DIFF_LIMIT = 35 时，e 超过 1.75cm 就进入满幅，
  *   相当于"小误差线性、大误差饱和"，对循迹反而很合适。
  */
-#define LINE_PD_DFLT_KP             14.0f
+#define LINE_PD_DFLT_KP             12.0f
 /*
  * 外环微分增益，单位 cm/s 差速量 每 (cm/s) 误差变化率。
  *
@@ -532,7 +532,7 @@
  *     周期改成 20ms（dt 变小）          -> 同样的 KD 变得更凶，必须调小
  *   改外环周期后如果出现抖动，第一个要怀疑的就是 KD。
  */
-#define LINE_PD_DFLT_KD             1.0f
+#define LINE_PD_DFLT_KD             0.6f
 
 /*
  * 基础速度由上面的「赛道档位」决定（LINE_SIMPLE_PROFILE）：
@@ -725,7 +725,7 @@
  * 滞回：|e| >= ENTER 才进入宽差速，|e| < EXIT 才退出，
  *       防止直道上一帧抖动就把方向打满。
  * ========================================================================= */
-#define LINE_DIFF_WIDE_LIMIT        35.0f   /* br 撤销：与基础限幅一致            */
+#define LINE_DIFF_WIDE_LIMIT        35.0f   /* ⚠️当前无效：等于基础限幅（br 撤销）*/
 #define LINE_DIFF_WIDE_ENTER_CM     2.46f   /* =1.50×1.643（新标定）               */
 #define LINE_DIFF_WIDE_EXIT_CM      1.64f   /* =1.00×1.643（新标定）               */
 #define LINE_DIFF_WIDE_THETA_RAD    0.30f   /* 或线角超过这个也进入宽差速           */
@@ -1042,7 +1042,7 @@
  *       按灰度模块给出的"最后偏离方向"继续满舵前进，尝试找回线。
  *       适合调试完成后的实跑，但线丢得远时车会一直转圈。
  */
-#define LINE_STOP_IF_LINE_LOST      1
+#define LINE_STOP_IF_LINE_LOST      1       /* ⚠️历史遗留：代码已不再引用 */
 
 /* ------------------------------------------------------------------------- */
 /* 控制器结构体                                                                */
