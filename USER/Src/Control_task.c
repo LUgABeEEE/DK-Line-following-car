@@ -108,6 +108,7 @@ static void ControlTask_Main(void *argument)
 {
     TickType_t last_wake;
     TickType_t last_outer;
+    TickType_t last_gray;
     TickType_t last_ui;
     uint32_t   fps_counter = 0U;
 
@@ -120,6 +121,7 @@ static void ControlTask_Main(void *argument)
      */
     last_wake  = xTaskGetTickCount();
     last_outer = last_wake;
+    last_gray  = last_wake;
     last_ui    = last_wake;
 
     for (;;)
@@ -193,19 +195,34 @@ static void ControlTask_Main(void *argument)
         }
 
         /*
-         * ---- 传感器采样：每个 20ms 节拍都读 ----
+         * ---- 节拍 1b：灰度采样，10ms ----
          *
-         * 控制律仍然是 40ms（下面节拍 2），但采样提到 50Hz。
-         * 原因：40ms 在 45cm/s 时车已移动 18mm，跨过 2.6 个通道间距，
-         * 期间发生的"直角弯单侧全黑""锐角弯瞬间分叉"全都看不到。
+         * 为什么独立成 10ms：
+         *   启停线识别靠"中间连续黑 + 两边留白"的短脉冲，脉冲窗口在
+         *   55cm/s 时只有 15.5mm ≈ 28ms，20ms 采样只能抓到 1~2 拍，
+         *   偶尔整拍漏掉。10ms 能把样本数翻倍，漏检率明显下降。
+         *
+         * 为什么不影响控制律：
+         *   LinePD 仍然在下面节拍 2 按 LINE_PD_PERIOD_MS(20ms) 跑，
+         *   这里只是把"采样"加快，PD 用的是最新一帧。
+         *
+         * 为什么现在敢加到 10ms：
+         *   Gray 的寄存器读已经改成 DMA + 信号量，传输的 1.2ms 里任务挂起、
+         *   CPU 让给别的任务，不像阻塞版那样占满 12% CPU。
          *
          * 只在循迹模式读（其它模式不关心），减少无谓的总线占用。
          * 失败不特殊处理：Gray 内部会累计 fail_count，
          * LinePD_Update 开头会检查它。
          */
-        if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
+        now = xTaskGetTickCount();
+        if ((now - last_gray) >= pdMS_TO_TICKS(GRAY_SAMPLE_PERIOD_MS))
         {
-            (void)Gray_Update(&g_gray, &hi2c1);
+            last_gray = now;
+
+            if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
+            {
+                (void)Gray_Update(&g_gray, &hi2c1);
+            }
         }
 
         switch (g_ctrl_mode)
@@ -350,10 +367,9 @@ if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
             else
             {
                 /*
-                 * 非循迹模式：仍然读灰度刷新数据（便于 OLED/调试观察），
-                 * 但丢弃结果，不驱动电机。
+                 * 非循迹模式：灰度采样已由上面的 10ms 节拍负责，
+                 * 这里不再重复读总线（以前两个分支各读一次，白占带宽）。
                  */
-                (void)Gray_Update(&g_gray, &hi2c1);
             }
 
             fps_counter++;

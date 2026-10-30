@@ -16,6 +16,8 @@
 
 #include "Gray.h"
 #include "main.h"
+#include "FreeRTOS.h"
+#include "semphr.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -48,6 +50,22 @@ extern UART_HandleTypeDef huart2;
  */
 static uint8_t s_line_is_bright = GRAY_LINE_IS_DARK;
 
+/*
+ * I2C1 的 DMA 同步。
+ *
+ * 为什么用 DMA：
+ *   阻塞式 HAL_I2C_Mem_Read 读一次 16 字节要 1.2ms（400kHz），
+ *   这段时间 CPU 完全空转。提到 10ms 采样后占空比会到 12%，
+ *   再快（5ms）就到 24%，控制任务会被拖住。
+ *   用 DMA + 二元信号量：传输期间任务挂起、CPU 还给别的任务，
+ *   只有传输真正占用总线的时间。
+ *
+ * 注意：DMA1_Channel7 已经由 CubeMX 配好（PERIPH_TO_MEMORY），
+ *      NVIC 也开了（优先级 6），中断里调的是 HAL_DMA_IRQHandler(&hdma_i2c1_rx)，
+ *      所以 HAL 的完成回调能正常触发。
+ */
+static SemaphoreHandle_t s_i2c_done = NULL;
+
 /* 上一次有效的线位置，用于丢线时保持方向 */
 static float s_last_position_mm = 0.0f;
 
@@ -59,25 +77,96 @@ static float s_last_position_mm = 0.0f;
  * 从模块的连续寄存器读 len 个字节。
  * 地址是 7 位，HAL 要求左移一位后传入。
  */
+/*
+ * DMA 完成/出错回调（中断上下文）。
+ * 只做一件事：放信号量，让等待的 Gray_ReadRegisters 继续。
+ */
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+    BaseType_t woken = pdFALSE;
+
+    if ((hi2c != NULL) && (hi2c->Instance == I2C1) && (s_i2c_done != NULL))
+    {
+        (void)xSemaphoreGiveFromISR(s_i2c_done, &woken);
+        portYIELD_FROM_ISR(woken);
+    }
+}
+
+/*
+ * I2C 出错时由 main.c 的 HAL_I2C_ErrorCallback 调用（那里已经有 I2C2/OLED
+ * 的处理，不能再单独定义一份 HAL_I2C_ErrorCallback，否则重复符号链接失败）。
+ * 这里只负责把等待中的 Gray_ReadRegisters 唤醒，让它尽快返回失败。
+ */
+void Gray_NotifyI2cError(void)
+{
+    BaseType_t woken = pdFALSE;
+
+    if (s_i2c_done != NULL)
+    {
+        (void)xSemaphoreGiveFromISR(s_i2c_done, &woken);
+        portYIELD_FROM_ISR(woken);
+    }
+}
+
+/*
+ * 读传感器寄存器：DMA 发起 + 等信号量。
+ *
+ * 相比阻塞版的好处：传输的 1.2ms 里任务挂起、CPU 让给别的任务，
+ * 控制任务的周期抖动小很多，也才能把采样率提到 10ms。
+ *
+ * 超时处理：清掉信号量残留 -> 复位 I2C 外设 -> 返回失败。
+ * 失败会被上层累加进 fail_count，不会卡死。
+ */
 static uint8_t Gray_ReadRegisters(I2C_HandleTypeDef *hi2c, uint8_t reg,
                                  uint8_t *buf, uint16_t len)
 {
-    HAL_StatusTypeDef status;
-
     if ((hi2c == NULL) || (buf == NULL) || (len == 0U))
     {
         return 0U;
     }
 
-    status = HAL_I2C_Mem_Read(hi2c,
-                              (uint16_t)(GRAY_I2C_ADDR_7BIT << 1),
-                              reg,
-                              I2C_MEMADD_SIZE_8BIT,
-                              buf,
-                              len,
-                              GRAY_I2C_TIMEOUT_MS);
+    /*
+     * 调度器还没启动时不能阻塞等信号量（FreeRTOS 未运行）。
+     * 这种场景只会出现在 main() 里的自检函数（Gray_TestSequence 等），
+     * 退回阻塞版即可，不影响运行时性能。
+     */
+    if ((s_i2c_done == NULL) ||
+        (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING))
+    {
+        return (HAL_I2C_Mem_Read(hi2c,
+                                 (uint16_t)(GRAY_I2C_ADDR_7BIT << 1),
+                                 reg,
+                                 I2C_MEMADD_SIZE_8BIT,
+                                 buf,
+                                 len,
+                                 GRAY_I2C_TIMEOUT_MS) == HAL_OK) ? 1U : 0U;
+    }
 
-    return (status == HAL_OK) ? 1U : 0U;
+    /* 清掉上一次可能残留的信号量，避免误判成本次完成 */
+    (void)xSemaphoreTake(s_i2c_done, 0U);
+
+    if (HAL_I2C_Mem_Read_DMA(hi2c,
+                             (uint16_t)(GRAY_I2C_ADDR_7BIT << 1),
+                             reg,
+                             I2C_MEMADD_SIZE_8BIT,
+                             buf,
+                             len) != HAL_OK)
+    {
+        return 0U;
+    }
+
+    if (xSemaphoreTake(s_i2c_done, pdMS_TO_TICKS(GRAY_I2C_TIMEOUT_MS)) != pdTRUE)
+    {
+        /*
+         * 超时：I2C 可能被从设备拉死（传感器掉电/线松）。
+         * 复位外设，下一次调用重新开始，避免整个系统卡在总线等待上。
+         */
+        (void)HAL_I2C_DeInit(hi2c);
+        (void)HAL_I2C_Init(hi2c);
+        return 0U;
+    }
+
+    return 1U;
 }
 
 /* 把 16 字节的"低字节在前"数据解析成 8 个 uint16 */
@@ -104,6 +193,12 @@ void Gray_Init(Gray_Sensor_t *sensor)
 
     memset(sensor, 0, sizeof(Gray_Sensor_t));
     s_last_position_mm = 0.0f;
+
+    /* DMA 完成信号量：只创建一次（Gray_Init 可能被多次调用） */
+    if (s_i2c_done == NULL)
+    {
+        s_i2c_done = xSemaphoreCreateBinary();
+    }
 }
 
 void Gray_SetLinePolarity(uint8_t line_is_bright)
@@ -332,8 +427,9 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
     {
         if (sensor->stop_pulse <= GRAY_STOP_BAR_PULSE_MAX)
         {
-            sensor->stop_bar_seen = 1U;
-            sensor->stop_bar_len  = sensor->stop_pulse;
+            sensor->stop_bar_seen  = 1U;
+            sensor->stop_bar_len   = sensor->stop_pulse;
+            sensor->stop_bar_state = sensor->state_byte;
         }
         sensor->stop_pulse = 0U;
     }

@@ -78,6 +78,15 @@
 #define GRAY_STOP_BAR_CHANNELS  4U      /* 中间至少几路连续黑 */
 #define GRAY_STOP_BAR_PULSE_MAX 3U      /* 持续超过这么多拍 = 角点，不算启停线 */
 
+/*
+ * 灰度采样周期（ms）。
+ *
+ * 10ms 而不是 20ms：启停线脉冲窗口只有 15.5mm（55cm/s 时 28ms），
+ * 20ms 采样只能抓 1~2 拍，容易整拍漏掉；10ms 翻倍到 2~4 拍。
+ * 配合 I2C DMA 后 CPU 占用几乎不变（传输期间任务挂起）。
+ */
+#define GRAY_SAMPLE_PERIOD_MS   10U
+
 /* ------------------------------------------------------------------------- */
 /* 机械标定                                                                    */
 /* ------------------------------------------------------------------------- */
@@ -305,7 +314,8 @@ typedef struct
     /* ---- 启停线短脉冲（自动停车）---- */
     uint8_t  stop_pulse;        /* 连续"多路全黑"的采样拍数                       */
     uint8_t  stop_bar_seen;     /* 1 = 刚出现一次短全黑脉冲（启停线候选，待消费）  */
-    uint8_t  stop_bar_len;      /* 这次脉冲持续了几拍（20ms/拍）                   */
+    uint8_t  stop_bar_len;      /* 这次脉冲持续了几拍（采样周期/拍）               */
+    uint8_t  stop_bar_state;    /* 触发那次脉冲时的通道状态字节（调试用）          */
 
     /*
      * ---- 场景分类（弯道识别）----
@@ -435,6 +445,12 @@ typedef struct
  * 请在 MX_I2C1_Init() 之后调用一次。
  */
 void Gray_Init(Gray_Sensor_t *sensor);
+
+/*
+ * I2C 出错通知：由 main.c 的 HAL_I2C_ErrorCallback 在 I2C1 出错时调用，
+ * 唤醒正在等 DMA 完成的 Gray_ReadRegisters，避免它白等到超时。
+ */
+void Gray_NotifyI2cError(void);
 
 /* 设置线条的明暗关系，默认 GRAY_LINE_IS_DARK。 */
 void Gray_SetLinePolarity(uint8_t line_is_bright);

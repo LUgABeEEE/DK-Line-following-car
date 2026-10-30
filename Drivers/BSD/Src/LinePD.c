@@ -127,6 +127,7 @@ void LinePD_Init(Line_PD_t *pd)
     pd->speed_limit = LINE_SPEED_LIMIT;
     pd->d_filter    = LINE_PD_DFLT_D_FILTER;
     pd->alat_max    = LINE_ALAT_MAX_DFLT;
+    pd->race_zone   = 0U;
     pd->wide_steer  = 0U;
     pd->steer_gain  = 1.0f;
     pd->steer_out   = 0.0f;
@@ -159,6 +160,7 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->commit_target_deg = 0.0f;
     pd->race_enabled   = 0U;
     pd->race_phase     = 0U;
+    pd->race_zone      = 0U;
     pd->race_pulse     = 0U;
     pd->race_lap_cm    = 0.0f;
     pd->race_start_cm  = 0.0f;
@@ -326,13 +328,39 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 
         if (pd->race_phase == 0U)
         {
-            float arm_cm = (pd->race_lap_cm > 0.0f)
-                           ? (pd->race_lap_cm * LINE_RACE_ARM_FRAC)
-                           : LINE_RACE_ARM_MIN_CM;
+            /*
+             * 武装里程：
+             *   周长模式 -> LAP − LINE_RACE_ZONE_CM（进入"接近区"）
+             *              同时置 race_zone，把速度压到 ZONE_SPEED_CMS，
+             *              让启停线脉冲更宽、刹车更短，也让接近区之前的
+             *              中途误检完全没有机会（那时根本没武装）。
+             *   自适应   -> LINE_RACE_ARM_MIN_CM，不降速（不知道终点在哪）
+             */
+            float arm_cm;
+
+            if (pd->race_lap_cm > 0.0f)
+            {
+                arm_cm = pd->race_lap_cm - LINE_RACE_ZONE_CM;
+
+                /* 周长很短时别把接近区算成负数 */
+                if (arm_cm < (pd->race_lap_cm * LINE_RACE_ARM_FRAC))
+                {
+                    arm_cm = pd->race_lap_cm * LINE_RACE_ARM_FRAC;
+                }
+            }
+            else
+            {
+                arm_cm = LINE_RACE_ARM_MIN_CM;
+            }
 
             if (traveled >= arm_cm)
             {
                 pd->race_phase = 1U;
+
+                if (pd->race_lap_cm > 0.0f)
+                {
+                    pd->race_zone = 1U;
+                }
             }
         }
         else if (pd->race_phase == 1U)
@@ -1237,6 +1265,16 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                 target_speed = LINE_RACE_APPROACH_CMS;
             }
 
+            /*
+             * 终点接近区（"降速武装"）：限速 42cm/s。
+             * 目的是把启停线脉冲窗口从 28ms 拉到 37ms（10ms 采样能抓 3~4 拍），
+             * 同时缩短刹车距离让停车更准。
+             */
+            if ((pd->race_zone != 0U) && (target_speed > LINE_RACE_ZONE_SPEED_CMS))
+            {
+                target_speed = LINE_RACE_ZONE_SPEED_CMS;
+            }
+
             if (target_speed > pd->speed_limit)
             {
                 target_speed = pd->speed_limit;
@@ -1879,6 +1917,7 @@ void LinePD_RaceStart(Line_PD_t *pd, float lap_cm)
     pd->race_detect_cm = 0.0f;
     pd->race_pulse     = 0U;
     pd->race_phase     = 0U;
+    pd->race_zone      = 0U;   /* 新一次比赛从"不在接近区"开始 */
 }
 
 void LinePD_RaceCancel(Line_PD_t *pd)

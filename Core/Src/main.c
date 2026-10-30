@@ -141,6 +141,17 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 
     OLED_NotifyTxComplete();
   }
+  else if (hi2c->Instance == I2C1)
+  {
+    /*
+     * 灰度传感器（I2C1）现在是 DMA 读，出错时 HAL 不会再调
+     * MemRxCpltCallback，必须在这里主动唤醒等待方，
+     * 否则 Gray_ReadRegisters 要白等到超时才返回。
+     */
+    hi2c->ErrorCode = HAL_I2C_ERROR_NONE;
+
+    Gray_NotifyI2cError();
+  }
 }
 
 /* USER CODE END 0 */

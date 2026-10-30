@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "cf"
+#define BLE_BUILD_TAG   "cg"
 
 /*
  * UART 发送超时，单位 ms。
@@ -462,8 +462,15 @@ static const char *BleTask_Fmt1(char *buf, uint16_t size, float value)
  */
 static void BleTask_DumpPid(uint8_t dump_speed)
 {
-    /* 行尾多了 rp/rd/ra/sp 四个字段，128 不够，扩到 160 */
-    char line[160];
+    /*
+     * 行缓冲：128 -> 160 -> 192。
+     *
+     * [L] 行现在有 e/s/L/R（各最多 13 字节）、sd/sc/cd/sr/cs/y、
+     * 以及停车调试的 rp/rd/ra/sp/S/rz/sb 共 18 个字段。
+     * 160 在最坏情况下（数值都是长小数）会被编译器判为可能截断
+     * （-Wformat-truncation 告警），扩到 192 留足余量。
+     */
+    char line[192];
     char b1[14];
     char b2[14];
     char b3[14];
@@ -541,7 +548,7 @@ static void BleTask_DumpPid(uint8_t dump_speed)
 
             (void)snprintf(line, sizeof(line),
                            "[L%s] %s e%s s%s L%s R%s sd%+d sc=%s cd%+d sr=%d cs=%d y%+d "
-                           "rp%d rd%s ra%s sp%d S%02X\r\n",
+                           "rp%d rd%s ra%s sp%d S%02X rz%d sb%02X\r\n",
                            BLE_BUILD_TAG,
                            mode_tag,
                            BleTask_Fmt1(b1, sizeof(b1), g_line_pd.error),
@@ -559,7 +566,9 @@ static void BleTask_DumpPid(uint8_t dump_speed)
                            BleTask_Fmt1(b6, sizeof(b6),
                                         LinePD_RaceTraveled(&g_line_pd)),
                            (int)g_gray.stop_bar_len,
-                           (unsigned)g_gray.state_byte);
+                           (unsigned)g_gray.state_byte,
+                           (int)g_line_pd.race_zone,
+                           (unsigned)g_gray.stop_bar_state);
         }
     }
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
