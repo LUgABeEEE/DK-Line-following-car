@@ -81,10 +81,11 @@
 /*
  * 灰度采样周期（ms）。
  *
- * ⚠️ cg/ch 曾试图提到 5~10ms（配 DMA），但导致 OLED 不亮，先回退到 20ms。
- *    等 OLED 问题定位后再单独做高频采样。
+ * 5ms：启停线脉冲窗口只有 15.5mm（55cm/s 时 28ms、42cm/s 时 37ms），
+ * 20ms 采样只能抓 1~2 拍，容易整拍漏掉；5ms 能抓 5~7 拍。
+ * 采样走 DMA 异步，CPU 不被占用。
  */
-#define GRAY_SAMPLE_PERIOD_MS   20U
+#define GRAY_SAMPLE_PERIOD_MS   5U
 
 /* ------------------------------------------------------------------------- */
 /* 机械标定                                                                    */
@@ -444,6 +445,19 @@ typedef struct
  * 请在 MX_I2C1_Init() 之后调用一次。
  */
 void Gray_Init(Gray_Sensor_t *sensor);
+
+/*
+ * 发起一次异步 DMA 采样（不等待，上一次没完成就跳过）。
+ * 需要在固定节拍（GRAY_SAMPLE_PERIOD_MS）里调用；
+ * 采样完成后 Gray_Update() 会消费最新一帧。
+ */
+void Gray_StartSample(I2C_HandleTypeDef *hi2c);
+
+/*
+ * I2C 出错通知：由 main.c 的 HAL_I2C_ErrorCallback 在 I2C1 出错时调用，
+ * 只清内部 busy 标志（内部不调用任何 FreeRTOS API）。
+ */
+void Gray_NotifyI2cError(void);
 
 
 /* 设置线条的明暗关系，默认 GRAY_LINE_IS_DARK。 */

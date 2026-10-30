@@ -62,11 +62,105 @@ static float s_last_position_mm = 0.0f;
  * 从模块的连续寄存器读 len 个字节。
  * 地址是 7 位，HAL 要求左移一位后传入。
  */
+/* =========================================================================
+ * 异步 DMA 采样
+ *
+ * ⚠️⚠️ 铁律：本文件的 I2C/DMA 中断回调里【绝对不能】调用任何 FreeRTOS API
+ *        （xSemaphoreGiveFromISR / portYIELD_FROM_ISR / xQueueSendFromISR ...）。
+ *        本项目实测会触发 configASSERT 直接死机 —— OLED 当年就是栽在这里，
+ *        见 Oled.h 的 OLED_USE_RTOS_SEM 注释（那个宏最后被改成 0 才稳定）。
+ *        中断里只允许写普通 volatile 变量。
+ *
+ * 架构：一次 17 字节把"状态字节 + 8 路模拟值"全读回来
+ *       （寄存器 5 = 状态，6~21 = 模拟值，地址连续，一次事务就够，
+ *         比原来分两次读省一半总线时间）
+ *
+ * 双缓冲 + 就绪标志：
+ *       5ms 节拍调 Gray_StartSample() 发起下一次传输，不等待；
+ *       ISR 完成时翻转缓冲、置就绪标志；
+ *       Gray_Update() 消费最近完成的那一帧。
+ *       代价是数据滞后一个采样周期（5ms），对循迹和启停线都无影响，
+ *       换来的是传输期间 CPU 完全不被占用。
+ * ========================================================================= */
+
+#define GRAY_DMA_LEN    (1U + (GRAY_CHANNEL_COUNT * 2U))   /* 17 字节 */
+
+static uint8_t s_raw[2][GRAY_DMA_LEN];      /* 双缓冲 */
+static volatile uint8_t s_dma_buf   = 0U;   /* DMA 正在写的那块 */
+static volatile uint8_t s_ready_buf = 0U;   /* 最近完成的那块 */
+static volatile uint8_t s_ready     = 0U;   /* 1 = 有新帧待消费 */
+static volatile uint8_t s_busy      = 0U;   /* 1 = 传输进行中 */
+static uint32_t         s_busy_tick = 0U;   /* 发起时刻，用于看门狗 */
+static I2C_HandleTypeDef *s_hi2c    = NULL;
+
+/*
+ * ISR：只写普通变量。这里多写一行 FreeRTOS API 就会死机，别动。
+ */
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+    if ((hi2c != NULL) && (hi2c->Instance == I2C1))
+    {
+        s_ready_buf = s_dma_buf;
+        s_dma_buf   = (uint8_t)(s_dma_buf ^ 1U);
+        s_ready     = 1U;
+        s_busy      = 0U;
+    }
+}
+
+/*
+ * 由 main.c 的 HAL_I2C_ErrorCallback 在 I2C1 出错时调用。
+ * 同样只写变量：清 busy，让下一次采样能重新发起。
+ */
+void Gray_NotifyI2cError(void)
+{
+    s_busy = 0U;
+}
+
+/*
+ * 发起一次异步采样。上一次还没完成就直接跳过（不排队、不等待）。
+ * 带看门狗：busy 超过 20ms 说明总线卡死，复位 I2C 外设。
+ */
+void Gray_StartSample(I2C_HandleTypeDef *hi2c)
+{
+    if (hi2c == NULL)
+    {
+        return;
+    }
+
+    s_hi2c = hi2c;
+
+    if (s_busy != 0U)
+    {
+        if ((HAL_GetTick() - s_busy_tick) < 20U)
+        {
+            return;         /* 上一次还没完成，这一拍跳过 */
+        }
+
+        /* 超时：复位外设，避免永久卡在 busy */
+        (void)HAL_I2C_DeInit(hi2c);
+        (void)HAL_I2C_Init(hi2c);
+        s_busy = 0U;
+    }
+
+    s_busy      = 1U;
+    s_busy_tick = HAL_GetTick();
+
+    if (HAL_I2C_Mem_Read_DMA(hi2c,
+                             (uint16_t)(GRAY_I2C_ADDR_7BIT << 1),
+                             GRAY_REG_STATE,
+                             I2C_MEMADD_SIZE_8BIT,
+                             s_raw[s_dma_buf],
+                             GRAY_DMA_LEN) != HAL_OK)
+    {
+        s_busy = 0U;
+    }
+}
+
 /*
  * 读传感器寄存器（阻塞版）。
  *
- * ⚠️ cg/ch 版曾改成 DMA + 信号量，结果 OLED 不亮（I2C2 那条链路受影响），
- *    所以这里先退回阻塞读。DMA 方案等 OLED 问题查清后再单独启用。
+ * 只用于初始化阶段（读阈值）和调度器未启动时的自检函数。
+ * 运行时的高频采样走 Gray_StartSample + DMA。
  */
 static uint8_t Gray_ReadRegisters(I2C_HandleTypeDef *hi2c, uint8_t reg,
                                  uint8_t *buf, uint16_t len)
@@ -275,32 +369,26 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
         return 1U;
     }
 
-    /* 累计计数：每次进入都算一次读取尝试，用于统计长期错误率 */
+    /*
+     * 消费 DMA 完成的那一帧。
+     *
+     * 没有新帧时直接返回 1（沿用上一帧数据），不算通信失败：
+     * 5ms 采样 + 0.56ms 传输，正常情况下每拍都有新帧；
+     * 偶尔跳过一拍属于正常抖动，累计到 fail_count 会误判丢线。
+     */
+    if (s_ready == 0U)
+    {
+        return 1U;
+    }
+
+    s_ready = 0U;
+
+    /* 累计计数：每次真正拿到一帧才算一次读取 */
     sensor->total_reads++;
 
-    /* ---------- 1. 读数字状态（寄存器 5，1 字节） ---------- */
-    if (Gray_ReadRegisters(hi2c, GRAY_REG_STATE, &raw_state, 1U) == 0U)
-    {
-        if (sensor->fail_count < 0xFFFFU)
-        {
-            sensor->fail_count++;       /* 限幅，避免回绕成"假恢复" */
-        }
-        sensor->total_fails++;
-        sensor->line_valid = 0U;
-        return (sensor->fail_count >= GRAY_FAIL_LIMIT) ? 2U : 1U;
-    }
-
-    /* ---------- 2. 读 8 路模拟值（寄存器 6~21，16 字节，一次事务） ---------- */
-    if (Gray_ReadRegisters(hi2c, GRAY_REG_ANALOG_CH1, raw_analog, sizeof(raw_analog)) == 0U)
-    {
-        if (sensor->fail_count < 0xFFFFU)
-        {
-            sensor->fail_count++;       /* 限幅，避免回绕成"假恢复" */
-        }
-        sensor->total_fails++;
-        sensor->line_valid = 0U;
-        return (sensor->fail_count >= GRAY_FAIL_LIMIT) ? 2U : 1U;
-    }
+    /* 一次 17 字节：raw[0] = 状态字节，raw[1..16] = 8 路模拟值 */
+    raw_state = s_raw[s_ready_buf][0];
+    (void)memcpy(raw_analog, &s_raw[s_ready_buf][1], sizeof(raw_analog));
 
     /* 通信成功，清除失败计数 */
     sensor->fail_count  = 0U;

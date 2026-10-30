@@ -141,6 +141,17 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 
     OLED_NotifyTxComplete();
   }
+  else if (hi2c->Instance == I2C1)
+  {
+    /*
+     * 灰度（I2C1）出错：清 busy 标志，让下一次采样能重新发起。
+     * 注意 Gray_NotifyI2cError() 内部只写普通变量，
+     * 绝不调用 FreeRTOS API（中断里调会触发 configASSERT 死机）。
+     */
+    hi2c->ErrorCode = HAL_I2C_ERROR_NONE;
+
+    Gray_NotifyI2cError();
+  }
 }
 
 /* USER CODE END 0 */
