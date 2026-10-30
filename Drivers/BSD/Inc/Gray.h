@@ -317,6 +317,7 @@ typedef struct
     uint8_t  stop_bar_len;      /* 这次脉冲持续了几拍（采样周期/拍）               */
     uint8_t  stop_bar_state;    /* 触发那次脉冲时的通道状态字节（调试用）          */
     float    stop_bar_pos_mm;   /* 脉冲发生【当时】的位置（不是消费时的那一刻）    */
+    uint16_t stop_bar_count;    /* 累计检测到多少次脉冲（不清零，用于统计）        */
 
     /*
      * ---- 场景分类（弯道识别）----
