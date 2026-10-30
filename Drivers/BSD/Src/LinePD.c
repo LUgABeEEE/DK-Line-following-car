@@ -347,15 +347,29 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             if (gray->stop_bar_seen != 0U)
             {
                 /*
-                 * 判定（宁漏不误）：
-                 *   - 必须【没有方向锁存】：真角点一定有 SIDE/FORK 方向，
-                 *     启停线只是短横线，方向保持 0；
-                 *   - 横向误差 <1.2cm；
-                 *   - 脉冲宽度由 Gray 限制在 <=3 拍（角点全黑会持续更久）。
-                 * 高速漏检由"学到的周长"兜底，不在弯道冒误停的风险。
+                 * 判定（三重过滤，全部满足才算启停线）：
+                 *
+                 *   ① 空间特征（在 Gray_IsStopBarPattern 里做，见 Gray.c）：
+                 *      中间 >=4 路连续黑、两边各留一路白、脉冲 <=3 拍。
+                 *      这一条就排除了直角弯（8 路全黑，两边到边）、
+                 *      侧边 SIDE（一侧到边）、分叉 FORK（黑不连续）。
+                 *
+                 *   ② 横向误差 < LINE_RACE_DETECT_ERR_CM(1.97cm)：
+                 *      真启停线压在阵列正中，重心 ≈ 0；侧边事件误差会被
+                 *      钳到 ±4.03cm，直接被这条挡掉。
+                 *
+                 *   ③ 跑够 LINE_RACE_DETECT_MIN_CM(50cm) 才认：
+                 *      排除起跑线附近的杂线。
+                 *
+                 * ⚠️ 曾经还有一条 "pd->corner_dir == 0"（必须没有方向锁存），
+                 *    2026-10-30 实测证明它在弧线赛道上误伤严重：
+                 *      run2 跑了 1739cm，corner_dir 有 83% 的时间是 +1
+                 *      （SIDE_L 每次锁存保持 600ms），启停线 83% 被这条挡掉，
+                 *      整圈 rd 恒为 0，自动停车从来没成功过。
+                 *    这条门槛当初是因为判据只有"6 路全黑"、没有空间区分能力；
+                 *    现在 ① 的三判据已经足够，所以去掉。
                  */
-                if ((pd->corner_dir == 0) &&
-                    (gray->position_cm > -LINE_RACE_DETECT_ERR_CM) &&
+                if ((gray->position_cm > -LINE_RACE_DETECT_ERR_CM) &&
                     (gray->position_cm <  LINE_RACE_DETECT_ERR_CM) &&
                     ((pd->race_lap_cm > 0.0f) ||
                      (traveled >= LINE_RACE_DETECT_MIN_CM)))
