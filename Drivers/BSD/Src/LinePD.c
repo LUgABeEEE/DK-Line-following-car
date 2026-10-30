@@ -413,7 +413,14 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
              * 只黑 36ms，外环 40ms 一拍可能整拍漏掉（实测就是这样丢的）。
              * 这里只消费 Gray 锁存的"短全黑脉冲"标志。
              */
-            if (gray->stop_bar_seen != 0U)
+            /*
+             * ⚠️ 这里必须用本拍取走的 pulse，不能再用 gray->stop_bar_seen：
+             *    进入 race 块时已经把标志清零了（见上面 pulse 的注释），
+             *    再判断 gray->stop_bar_seen 永远是 0 —— 识别分支永远不执行。
+             *    这就是 ct 版"完全不停车"的原因（实测 bn 涨到 8、
+             *    bp 全是 0.0、rz 已经是 1，但 rp 从来没到过 2）。
+             */
+            if (pulse != 0U)
             {
                 /*
                  * 判定（三重过滤，全部满足才算启停线）：
