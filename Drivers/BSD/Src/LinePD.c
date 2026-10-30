@@ -1361,8 +1361,29 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             slow_factor = LINE_CORNER_SLOW_MAX;
         }
 
+        /*
+         * 终点接近区里【禁止直道冲刺】。
+         *
+         * 用户实测发现：车在直道上正处在冲刺阶段（speed_boost 累积到最大
+         * +30%），到 LAP×0.8 突然被接近区限速 42 —— 速度从 71.5 硬砍到 42，
+         * 表现为"到点慢顿一下"。更糟的是冲刺逻辑在直道上会持续把
+         * speed_boost 顶在最大值，和限速形成对抗，车在接近区里速度忽高忽低。
+         *
+         * 接近区本来就是"该收油准备停车"的路段，冲刺在这里没有任何意义。
+         * 这里直接把 speed_boost 按衰减步长收回 0，让降速是平滑的。
+         */
+        if (pd->race_zone != 0U)
+        {
+            pd->straight_ticks = 0U;
+            pd->speed_boost -= LINE_BOOST_DECAY_STEP;
+
+            if (pd->speed_boost < 0.0f)
+            {
+                pd->speed_boost = 0.0f;
+            }
+        }
         /* 直道加速：仅在线、且三个量都小时才给 */
-        if ((pd->corner_active == 0U) &&
+        else if ((pd->corner_active == 0U) &&
             (((error < 0.0f) ? -error : error) < LINE_STRAIGHT_EPS_CM) &&
             (((steer < 0.0f) ? -steer : steer) < LINE_STRAIGHT_STEER_CM) &&
             (depth < 0.30f))
