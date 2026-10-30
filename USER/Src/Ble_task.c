@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "dl"
+#define BLE_BUILD_TAG   "dm"
 
 /*
  * UART 发送超时，单位 ms。
@@ -164,9 +164,11 @@ static uint32_t s_gray_dump_tick = 0U;
  */
 #define PID_DUMP_PERIOD_MS      160U
 
+#if (BLE_PERIODIC_LOG_ENABLE != 0)
 static uint32_t s_pid_dump_tick = 0U;
 /* 内环两行的分频计数：每两次才发一次 [A]/[B]（2.5Hz），省 9600 带宽 */
 static uint8_t  s_speed_div = 0U;
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* 任务内部状态                                                                */
@@ -482,6 +484,7 @@ static const char *BleTask_Fmt1(char *buf, uint16_t size, float value)
 /*
  * 输出一次 PID 运行数据：外环一行 + 内环两行。
  */
+#if (BLE_PERIODIC_LOG_ENABLE != 0)
 static void BleTask_DumpPid(uint8_t dump_speed)
 {
     /*
@@ -662,6 +665,8 @@ static void BleTask_DumpPid(uint8_t dump_speed)
  * 用来核对"按键调参到底改没改到"，以及排查
  * "输出占空比和公式对不上"这类问题（往往是增益和记忆中的不一样）。
  */
+#endif  /* BLE_PERIODIC_LOG_ENABLE */
+
 static void BleTask_DumpGains(void)
 {
     char line[192];
@@ -918,7 +923,11 @@ static void BleTask_Main(void *argument)
          * 和阈值。可以用 'D' 命令开关。
          */
         if ((GRAY_DUMP_ENABLE != 0) &&
+#if (BLE_PERIODIC_LOG_ENABLE != 0)
             ((HAL_GetTick() - s_gray_dump_tick) >= GRAY_DUMP_PERIOD_MS))
+#else
+            0)
+#endif
         {
             s_gray_dump_tick = HAL_GetTick();
             BleTask_DumpGray();
@@ -934,12 +943,14 @@ static void BleTask_Main(void *argument)
          *   已经占掉 65% 带宽，会挤掉灰度行、拖慢急停响应。
          *   控制分析主要看 [L]，内环看趋势 2.5Hz 足够。
          */
+#if (BLE_PERIODIC_LOG_ENABLE != 0)
         if ((HAL_GetTick() - s_pid_dump_tick) >= PID_DUMP_PERIOD_MS)
         {
             s_pid_dump_tick = HAL_GetTick();
             s_speed_div ^= 1U;
             BleTask_DumpPid(s_speed_div);
         }
+#endif
 
         /*
          * ---- 陀螺仪遥测 ----
@@ -956,6 +967,7 @@ static void BleTask_Main(void *argument)
                 {
                     s_imu_tick = HAL_GetTick();
 
+#if (BLE_PERIODIC_LOG_ENABLE != 0)
                     BleTask_Print("[I] id0x%02X sg%+d y%+d g%+d b%+d f%u\r\n",
                                   (unsigned int)MPU6050_GetWhoAmI(),
                                   (int)MPU6050_YAW_SIGN,
@@ -963,6 +975,7 @@ static void BleTask_Main(void *argument)
                                   (int)MPU6050_GetYawRateDps(),
                                   (int)(MPU6050_GetBiasDps() * 10.0f),
                                   (unsigned int)MPU6050_GetFaults());
+#endif
                 }
             }
         }
@@ -986,6 +999,7 @@ static void BleTask_Main(void *argument)
             {
                 s_diag_tick = HAL_GetTick();
 
+#if (BLE_PERIODIC_LOG_ENABLE != 0)
                 BleTask_Print("[M] heap%u stkC%u stkO%u stkB%u i2c%u/%u mod=%s cfg%u baud%lu\r\n",
                               (unsigned int)xPortGetFreeHeapSize(),
                               (unsigned int)(ControlTask_GetStackFreeWords() * 4U),
@@ -996,6 +1010,7 @@ static void BleTask_Main(void *argument)
                               BLE_ModuleName(),
                               (unsigned int)BLE_GetCfgResult(),
                               (unsigned long)BLE_GetBaudrate());
+#endif
             }
         }
 
