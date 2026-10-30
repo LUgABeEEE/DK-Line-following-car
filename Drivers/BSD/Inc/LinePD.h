@@ -527,7 +527,7 @@
  * 车已经多走了几十毫秒；硬刹本身也要滑 0.3~0.5cm。
  * 实测停车偏过 1cm -> 把这里加 1（2.0）；停早了就减。
  */
-#define LINE_RACE_BRAKE_MARGIN_CM   1.0f
+#define LINE_RACE_BRAKE_MARGIN_CM   3.0f
 /*
  * 【已删除】里程兜底 LINE_RACE_FALLBACK_CM
  *
