@@ -79,8 +79,7 @@ typedef struct
 #define TUNE_IDX_LBAS       10U
 #define TUNE_IDX_LAP        11U     /* 比赛自动停车：一圈周长 cm */
 #define TUNE_IDX_ALAT       12U     /* 曲率限速：允许最大侧向加速度 */
-#define TUNE_IDX_YFF        13U     /* 运动学前馈系数 K_ff */
-#define TUNE_PARAM_COUNT    14U
+#define TUNE_PARAM_COUNT    13U
 
 static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
 {
@@ -158,20 +157,6 @@ static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
      * 调大 = 弧线更快（可能甩出）；调小 = 更保守。
      */
     { "ALAT",   5.00f,  30.00f,  200.00f },
-    /*
-     * YFF: 线角角速度（dθ/dt）前馈系数（步长 0.05，范围 0~2.0）。
-     *
-     *   作用：进弯瞬间 θ 从 0 涨起来，dθ/dt>0，额外给一点转向 = 提前打方向。
-     *        稳态圆弧上 θ 恒定，dθ/dt=0，所以不影响弯中稳态，只补过渡段。
-     *
-     *   0.0 = 关闭（纯 PD + θ 前馈）
-     *   0.6 = 默认，约给 2~3cm/s 的进弯额外转向
-     *   大   = 进弯更凶（可能过冲）
-     *
-     *   ⚠️ 不要用陀螺横摆角速度做这个前馈（bz 版已证明是正反馈，
-     *      会把 |ω| 和 |s| 互相推高到发散）。前馈量必须来自线角，不是车。
-     */
-    { "YFF",    0.05f,   0.00f,   2.00f },
 };
 
 /* ------------------------------------------------------------------------- */
@@ -272,10 +257,6 @@ static float OledTask_ReadParam(uint8_t idx)
     {
         return g_line_pd.alat_max;
     }
-    if (idx == TUNE_IDX_YFF)
-    {
-        return g_line_pd.theta_rate_ff;
-    }
 
     /* 左右轮参数始终同步，读 A 的就行 */
     return Speed_PID_GetGain(MOTOR_A, idx);
@@ -366,13 +347,6 @@ static void OledTask_WriteParam(uint8_t idx, float value)
     {
         /* 曲率限速的侧向加速度上限，实时生效，不用重烧 */
         g_line_pd.alat_max = value;
-        return;
-    }
-
-    if (idx == TUNE_IDX_YFF)
-    {
-        /* 运动学前馈系数，实时生效，不用重烧 */
-        g_line_pd.theta_rate_ff = value;
         return;
     }
 
