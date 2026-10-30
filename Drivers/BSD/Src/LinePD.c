@@ -148,14 +148,10 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->error          = 0.0f;
     pd->last_error     = 0.0f;
     pd->d_filter_state = 0.0f;
-    pd->err_hist_idx   = 0U;
-    pd->err_hist_fill  = 0U;
-    memset(pd->err_hist, 0, sizeof(pd->err_hist));
     pd->steer          = 0.0f;
     pd->speed          = 0.0f;
     pd->straight_ticks = 0U;
     pd->speed_boost    = 0.0f;
-    pd->run_ticks      = 0U;
     pd->steer_out      = 0.0f;   /* 转向斜坡限幅的上一拍值，不清会带上一圈的残留 */
     pd->pos_filter     = 0.0f;
     pd->theta_rad      = 0.0f;
@@ -1083,52 +1079,11 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         pd->first_run  = 0U;
         pd->last_error = error;
         derivative     = 0.0f;
-
-        /* 历史照常写入，恢复微分时窗口里才是连续的样本 */
-        pd->err_hist[pd->err_hist_idx] = error;
-        pd->err_hist_idx = (uint8_t)((pd->err_hist_idx + 1U) & 0x03U);
-
-        if (pd->err_hist_fill < (LINE_D_WINDOW_TICKS + 1U))
-        {
-            pd->err_hist_fill++;
-        }
     }
     else
     {
-        /*
-         * 跨 LINE_D_WINDOW_TICKS 拍算微分（不是相邻两拍）。
-         *
-         * err_hist 是一个环形缓冲：写入本拍误差，再取"窗口前的那个值"。
-         * 这样分母是 3×20ms=60ms，白噪声对微分的影响降到 1/√3，
-         * 而 P 项完全不变。
-         */
-        uint8_t back = (uint8_t)((pd->err_hist_idx + 4U - LINE_D_WINDOW_TICKS) & 0x03U);
-
-        pd->err_hist[pd->err_hist_idx] = error;
-        pd->err_hist_idx = (uint8_t)((pd->err_hist_idx + 1U) & 0x03U);
-
-        /*
-         * 需要 WINDOW+1 个样本才能算"跨 WINDOW 拍的差"：
-         * 缓冲深 4，窗口 3，第 4 个样本写入后最早的样本才有效。
-         * （这里踩过一次：只判 fill >= WINDOW 会在第 3 拍就计算，
-         *   而那时 back 指向的还是未写入的 0，会产生一个巨大的假微分。）
-         */
-        if (pd->err_hist_fill < (LINE_D_WINDOW_TICKS + 1U))
-        {
-            pd->err_hist_fill++;
-        }
-
-        if (pd->err_hist_fill >= (LINE_D_WINDOW_TICKS + 1U))
-        {
-            float dt_sec = (float)(LINE_D_WINDOW_TICKS * LINE_PD_PERIOD_MS) / 1000.0f;
-
-            derivative = (error - pd->err_hist[back]) / dt_sec;
-        }
-        else
-        {
-            derivative = 0.0f;   /* 历史还没填满，先不做微分 */
-        }
-
+        float dt_sec = (float)LINE_PD_PERIOD_MS / 1000.0f;
+        derivative = (error - pd->last_error) / dt_sec;
         pd->last_error = error;
     }
     pd->all_assist = assist;
@@ -1459,12 +1414,6 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 
         slow_factor *= (1.0f + pd->speed_boost);
 
-        /* 起步计时（软限速用），饱和后不再增加 */
-        if (pd->run_ticks < 0xFFFFU)
-        {
-            pd->run_ticks++;
-        }
-
         /*
          * 丢线降速：进入搜索前（lost_count 1~容差）先减速，
          * 给车时间冲过断口/遮挡，也避免高速丢线直接甩出去。
@@ -1486,22 +1435,6 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             float dt_sec  = (float)LINE_PD_PERIOD_MS / 1000.0f;
             float step_up = LINE_SPEED_RAMP_CMS_PER_SEC * dt_sec;
             float step_dn = step_up * LINE_DOWN_RAMP_MULT;
-
-            /*
-             * 起步软限速：前 LINE_START_SOFT_MS 内压住速度，
-             * 让"斜着放车"也有机会收敛（详见 LinePD.h 的说明）。
-             * 误差已经收敛（|e| 很小）就提前解除，不影响正常起跑。
-             */
-            if (pd->run_ticks < (uint16_t)(LINE_START_SOFT_MS / LINE_PD_PERIOD_MS))
-            {
-                float e_now = (error < 0.0f) ? -error : error;
-
-                if ((e_now >= LINE_START_SOFT_ERR_CM) &&
-                    (target_speed > LINE_START_SOFT_CMS))
-                {
-                    target_speed = LINE_START_SOFT_CMS;
-                }
-            }
 
             /* 自动停车接近段：限速，17cm 内要停得准 */
             if ((pd->race_phase == 2U) && (target_speed > LINE_RACE_APPROACH_CMS))

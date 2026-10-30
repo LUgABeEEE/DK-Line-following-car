@@ -665,45 +665,12 @@
 #define LINE_SPEED_RAMP_CMS_PER_SEC  90.0f
 
 /*
- * 起步软限速。
- *
- * 为什么需要：车斜着放时，PD 只看到"横向偏移"，看不到"车与线的夹角"。
- * 起步瞬间偏移还很小、但夹角已经存在，P 项给不出足够的修正；
- * 等偏移长大了 P 项又猛打，必然过冲 -> 震荡。
- * 这段过程里唯一的帮手是微分项，而它此时还没有历史。
- *
- * 做法：进入循迹后的前 LINE_START_SOFT_MS 毫秒，把目标速度压在
- * LINE_START_SOFT_CMS 以下，让环路增益小一点、给收敛留时间。
- * 时间到或误差已经收敛（|e| 小且稳定）就提前解除。
- */
-#define LINE_START_SOFT_MS           700U
-#define LINE_START_SOFT_CMS          35.0f
-#define LINE_START_SOFT_ERR_CM       0.8f   /* |e| 小于这个就算已收敛，提前解除 */
-
-/*
  * 微分低通滤波系数 (0,1]。灰度解算出的位置在探头交界处有固有台阶，
  * 不滤波的话 D 项会把台阶当成分辨率极高的真实变化而放大。
  * 但系数太小会让 D 项严重滞后、失去阻尼作用（外环 100ms 周期下尤其明显），
  * 所以取 0.7 而不是更小。
  */
 #define LINE_PD_DFLT_D_FILTER       0.5f
-
-/*
- * 微分窗口（拍数，20ms/拍）。
- *
- * 原来用相邻两拍（1 拍 = 20ms）算微分：
- *     D = kd × Δe / 0.02 = 0.6 × 50 × Δe = 30 × Δe
- * 灰度质心在直线上本来就有约 1cm 抖动，被放大 30 倍后
- * 只要抖 1.2cm 就把差速限幅（35）打满 —— 实测就是这样：
- *     e0.8 -> s-16.9（符号都反了）、e1.0 -> s+18.7、e-1.0 -> s-18.5
- * 误差一直在 ±1.2cm，转向却在 ±33 之间摆。
- *
- * 改成跨 3 拍（60ms）算微分：
- *     同样 1cm 抖动 -> de/dt 变成 1/3 -> D 输出降到 10
- * 白噪声按 √3 衰减，而且 P 项完全不受影响（只有 D 项变慢）。
- * 代价：D 项的相位滞后增加 40ms，对 2~3Hz 的振荡影响很小。
- */
-#define LINE_D_WINDOW_TICKS         3U
 
 /*
  * 丢线容忍的连续周期数。超过之后按着下面两个开关处理。
@@ -1197,7 +1164,6 @@ typedef struct
     float d_filter;         /* 微分低通系数 (0,1]                             */
     float alat_max;         /* 曲率限速用：允许的最大侧向加速度 cm/s²         */
     uint8_t race_zone;      /* 1 = 已进入终点接近区（限速 + 武装）             */
-    uint16_t run_ticks;     /* 本次循迹已跑的拍数（20ms/拍），起步软限速用      */
     uint16_t race_seen;     /* 脉冲被 LinePD 看到的次数（诊断用）              */
     uint16_t race_reject;   /* 看到但被关卡拒掉的次数（诊断用）                */
 
@@ -1220,9 +1186,6 @@ typedef struct
     float   last_dist_cm;   /* 上一拍的两轮平均里程                                   */
 
     /* 最近 3 个 (位置, 里程) 样本，用最小二乘斜率估 θ，比两点差分抗噪 */
-    float   err_hist[4];    /* 误差历史，用于跨拍微分（LINE_D_WINDOW_TICKS）  */
-    uint8_t err_hist_idx;
-    uint8_t err_hist_fill;
     float   pos_hist[3];
     float   dist_hist[3];
     uint8_t hist_count;
