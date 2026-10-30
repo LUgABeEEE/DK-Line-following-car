@@ -127,6 +127,7 @@ static void ControlTask_Main(void *argument)
     TickType_t last_outer;
     TickType_t last_gray;
     TickType_t last_speed;
+    TickType_t last_mpu;
     TickType_t last_ui;
     uint32_t   fps_counter = 0U;
 
@@ -141,6 +142,7 @@ static void ControlTask_Main(void *argument)
     last_outer = last_wake;
     last_gray  = last_wake;
     last_speed = last_wake;
+    last_mpu   = last_wake;
     last_ui    = last_wake;
 
     for (;;)
@@ -187,8 +189,24 @@ static void ControlTask_Main(void *argument)
         /* ================= 节拍 1：内环速度环，20ms ================= */
         Encoder_UpdateSpeed();
 
-        /* 陀螺仪：读角速度 + 积分航向（20ms 一拍，和速度环同频） */
-        MPU6050_Update();
+        /*
+         * 陀螺仪：读角速度 + 积分航向，门控在 20ms。
+         *
+         * ⚠️ 主循环改成 5ms 后这里曾经变成每 5ms 读一次：
+         *    MPU6050_Update() 内部是【阻塞式 I2C2 读】（约 0.35ms），
+         *    而 I2C2 上还挂着 OLED 的 DMA 整屏传输（一页 129 字节约 3ms）。
+         *    两者抢同一条总线时，控制任务可能被拖住好几毫秒 ——
+         *    这正是"识别启停线时控制反应不过来"的来源。
+         *    门控回 20ms 后，阻塞读次数降到原来的 1/4，
+         *    而且航向积分本来就是按 HAL_GetTick 的真实间隔算的，频率降低不影响精度。
+         */
+        now = xTaskGetTickCount();
+        if ((now - last_mpu) >= pdMS_TO_TICKS(20U))
+        {
+            last_mpu = now;
+
+            MPU6050_Update();
+        }
 
         /*
          * MPU6050 掉线重试：上电时可能因为模块还没稳定/接插件接触不良

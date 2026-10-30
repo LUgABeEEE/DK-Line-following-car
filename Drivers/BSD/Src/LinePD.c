@@ -340,9 +340,14 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 
             if (pd->race_lap_cm > 0.0f)
             {
-                arm_cm = pd->race_lap_cm - LINE_RACE_ZONE_CM;
+                /*
+                 * 按周长比例进入接近区（不是固定厘米数）：
+                 *   0.80 x 周长 —— 320cm 赛道即 256cm 处开始限速 + 武装。
+                 * 同时不低于 ARM_FRAC(0.5)，避免比例参数被误设成很小时
+                 * 一开跑就进入接近区。
+                 */
+                arm_cm = pd->race_lap_cm * LINE_RACE_ZONE_FRAC;
 
-                /* 周长很短时别把接近区算成负数 */
                 if (arm_cm < (pd->race_lap_cm * LINE_RACE_ARM_FRAC))
                 {
                     arm_cm = pd->race_lap_cm * LINE_RACE_ARM_FRAC;
