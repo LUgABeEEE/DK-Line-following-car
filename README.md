@@ -586,6 +586,13 @@ ENCODER_CALIBRATION_new = ENCODER_CALIBRATION_old × L / Delta
 
 ## 7. 已知问题 / TODO
 
+> 📋 **2026-10-30 全量代码巡检**（基线 `060533d` / 构建 `cv`）：
+> 共查出 P1 4 项、P2 7 项、P3 11 项，含复现证据与补丁，见
+> [`docs/代码巡检报告-2026-10-30.md`](docs/代码巡检报告-2026-10-30.md)。
+> 其中最该先修的是：`BleTask_SendTag()` 把 2/3 压成 1（自动停车打标全错）、
+> `BLE_STATE`(PA1) 被配成推挽输出（连接状态永远测不到）、
+> 灰度 `fail_count` 从不自增（传感器掉线不会停车）。
+
 - [ ] **等待实车复核（PSC 49→0 之后）**：手转一圈应为 ~1300 计数、跑 100 cm 应为 ~8900 计数，速度读数应与改动前基本一致；若只有 ~650 计数，说明 A/B 相缺一路。复核数据回来后可能需要微调 `ENCODER_GEAR_RATIO`。
 - [ ] **内环 KFF 未单独标定**：仍是默认 1.0。
       2026-10-25 的实车日志（`logs/serial_20261025_172300.log`）给出反证：
@@ -634,7 +641,7 @@ Drivers/BSD/      手写板级驱动
   Src/ 对应实现
 USER/             FreeRTOS 任务
 cmake/            gcc-arm-none-eabi 工具链文件 + CubeMX 子工程
-docs/             原理图
+docs/             原理图 + 代码巡检报告（代码巡检报告-2026-10-30.md）
 tools/            HC-05 遥测采集/解析/统计脚本（见 tools/README.md）
 linefllowing_car.ioc   CubeMX 工程（改外设从这里进）
 ```
