@@ -1164,6 +1164,8 @@ typedef struct
     float d_filter;         /* 微分低通系数 (0,1]                             */
     float alat_max;         /* 曲率限速用：允许的最大侧向加速度 cm/s²         */
     uint8_t race_zone;      /* 1 = 已进入终点接近区（限速 + 武装）             */
+    uint16_t race_seen;     /* 脉冲被 LinePD 看到的次数（诊断用）              */
+    uint16_t race_reject;   /* 看到但被关卡拒掉的次数（诊断用）                */
 
     /* ---- 运行状态：由 Init/Reset 维护 ---- */
     float   error;          /* 最近一次误差，cm（左正右负）                   */

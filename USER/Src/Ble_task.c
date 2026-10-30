@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "dc"
+#define BLE_BUILD_TAG   "dd"
 
 /*
  * UART 发送超时，单位 ms。
@@ -579,7 +579,7 @@ static void BleTask_DumpPid(uint8_t dump_speed)
 
             (void)snprintf(line, sizeof(line),
                            "[L%s] %s e%s s%s L%s R%s sd%+d sc=%s cd%+d sr=%d cs=%d y%+d "
-                           "rp%d rd%s ra%s sp%d S%02X rz%d sb%02X bn%d bp%s\r\n",
+                           "rp%d rd%s ra%s sp%d S%02X rz%d sb%02X bn%d bp%s sn%d rj%d\r\n",
                            BLE_BUILD_TAG,
                            mode_tag,
                            BleTask_Fmt1(b1, sizeof(b1), g_line_pd.error),
@@ -602,7 +602,9 @@ static void BleTask_DumpPid(uint8_t dump_speed)
                            (unsigned)g_gray.stop_bar_state,
                            (int)g_gray.stop_bar_count,
                            BleTask_Fmt1(b7, sizeof(b7),
-                                        g_gray.stop_bar_pos_mm * 0.1f));
+                                        g_gray.stop_bar_pos_mm * 0.1f),
+                           (int)g_line_pd.race_seen,
+                           (int)g_line_pd.race_reject);
         }
     }
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,

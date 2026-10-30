@@ -129,6 +129,8 @@ void LinePD_Init(Line_PD_t *pd)
     pd->d_filter    = LINE_PD_DFLT_D_FILTER;
     pd->alat_max    = LINE_ALAT_MAX_DFLT;
     pd->race_zone   = 0U;
+    pd->race_seen   = 0U;
+    pd->race_reject = 0U;
     pd->wide_steer  = 0U;
     pd->steer_gain  = 1.0f;
     pd->steer_out   = 0.0f;
@@ -423,6 +425,11 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
              */
             if (pulse != 0U)
             {
+                if (pd->race_seen < 0xFFFFU)
+                {
+                    pd->race_seen++;
+                }
+
                 /*
                  * 判定（三重过滤，全部满足才算启停线）：
                  *
@@ -524,6 +531,16 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                 else
                 {
                     /* 自适应且里程不够：不认 */
+                }
+
+                if (((pulse != 0U) && (yaw_ok != 0U) && (dist_ok != 0U) &&
+                     (gray->stop_bar_pos_mm * 0.1f > -LINE_RACE_DETECT_ERR_CM) &&
+                     (gray->stop_bar_pos_mm * 0.1f <  LINE_RACE_DETECT_ERR_CM)) == 0U)
+                {
+                    if (pd->race_reject < 0xFFFFU)
+                    {
+                        pd->race_reject++;
+                    }
                 }
 
                 if ((pulse != 0U) && (yaw_ok != 0U) && (dist_ok != 0U) &&
@@ -2062,6 +2079,8 @@ void LinePD_RaceStart(Line_PD_t *pd, float lap_cm)
     pd->race_pulse     = 0U;
     pd->race_phase     = 0U;
     pd->race_zone      = 0U;   /* 新一次比赛从"不在接近区"开始 */
+    pd->race_seen      = 0U;
+    pd->race_reject    = 0U;
 }
 
 void LinePD_RaceCancel(Line_PD_t *pd)
