@@ -76,7 +76,24 @@
  * 而直角弯是 8 路全黑、侧边是一侧到边，都被 ③ 排除。
  */
 #define GRAY_STOP_BAR_CHANNELS  4U      /* 中间至少几路连续黑 */
-#define GRAY_STOP_BAR_PULSE_MAX 3U      /* 持续超过这么多拍 = 角点，不算启停线 */
+/*
+ * ⚠️ 本文件所有"按拍数"的常量都随 GRAY_SAMPLE_PERIOD_MS 换算。
+ *    采样周期从 20ms 改成 5ms 时，同样的拍数只代表 1/4 的时间，
+ *    必须同步 ×4，否则防抖和脉冲宽度判据全部失效。
+ *
+ * 启停线脉冲宽度上限（拍）。
+ *
+ * 20ms 采样时代实测脉冲 1~2 拍，取 3 正好；
+ * 但 5ms 采样下同样一条 5cm 横线会持续 4~7 拍：
+ *     71.5cm/s -> 21.7ms -> 4.3 拍
+ *     55cm/s   -> 28ms   -> 5.6 拍
+ *     42cm/s   -> 37ms   -> 7.4 拍
+ * 仍然取 3 的话，【真实启停线会全部被当成角点丢掉】——
+ * 这就是"提高采样率后反而更认不到启停线"的原因。
+ * 取 12 覆盖到 30cm/s 以下的慢速，同时角点（全黑/半边黑）本来就不满足
+ * Gray_IsStopBarPattern 的三判据，不会被误算进来。
+ */
+#define GRAY_STOP_BAR_PULSE_MAX 12U     /* 持续超过这么多拍 = 角点，不算启停线 */
 
 /*
  * 灰度采样周期（ms）。
@@ -223,10 +240,19 @@
  *   而 sc 稳定，就说明参数合适。
  */
 #define GRAY_CLUSTER_MERGE_GAP       1U   /* 相邻两簇间隔 ≤ 此通道数则合并成一簇 */
-#define GRAY_SCENE_CONFIRM_SAMPLES   2U   /* LINE ↔ 角点 的进入/退出确认次数     */
-#define GRAY_SCENE_RELEASE_SAMPLES   3U   /* 角点 → LINE 的释放确认次数           */
-#define GRAY_SCENE_SUBTYPE_SAMPLES   3U   /* 角点子类型互切（SIDE↔FORK↔ALL）确认  */
-#define GRAY_SCENE_LOST_SAMPLES      1U   /* 任意 → NONE（丢线）确认次数          */
+/*
+ * 场景防抖确认次数（按拍）。
+ *
+ * ⚠️ 这些也是"按拍数"的常量，随采样周期换算：
+ *    原来是按 20ms 采样调的（2/3/3/1 拍 = 40/60/60/20ms），
+ *    采样提到 5ms 后同样的拍数只剩 10/15/15/5ms —— 防抖形同虚设，
+ *    场景在 LINE/SIDE/ALL 之间乱跳，角点事件被频繁触发，
+ *    表现就是【车变抖】。这里统一 ×4 恢复到原来的时间尺度。
+ */
+#define GRAY_SCENE_CONFIRM_SAMPLES   8U   /* LINE ↔ 角点 的进入/退出确认（40ms） */
+#define GRAY_SCENE_RELEASE_SAMPLES   12U  /* 角点 → LINE 的释放确认（60ms）      */
+#define GRAY_SCENE_SUBTYPE_SAMPLES   12U  /* 角点子类型互切确认（60ms）          */
+#define GRAY_SCENE_LOST_SAMPLES      4U   /* 任意 → NONE（丢线）确认（20ms）     */
 
 enum
 {
