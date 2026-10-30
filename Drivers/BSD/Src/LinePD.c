@@ -129,6 +129,10 @@ void LinePD_Init(Line_PD_t *pd)
     pd->d_filter    = LINE_PD_DFLT_D_FILTER;
     pd->alat_max    = LINE_ALAT_MAX_DFLT;
     pd->race_zone   = 0U;
+    pd->race_fuse_cm   = 0.0f;
+    pd->race_last_trav = 0.0f;
+    pd->race_last_tick = 0U;
+    pd->race_slip      = 0U;
     pd->wide_steer  = 0U;
     pd->steer_gain  = 1.0f;
     pd->steer_out   = 0.0f;
@@ -162,6 +166,10 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->race_enabled   = 0U;
     pd->race_phase     = 0U;
     pd->race_zone      = 0U;
+    pd->race_fuse_cm   = 0.0f;
+    pd->race_last_trav = 0.0f;
+    pd->race_last_tick = 0U;
+    pd->race_slip      = 0U;
     pd->race_pulse     = 0U;
     pd->race_lap_cm    = 0.0f;
     pd->race_start_cm  = 0.0f;
@@ -534,6 +542,12 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                     pd->race_detect_cm = traveled;
                     pd->race_pulse     = 0U;   /* 接近段计时从这里开始 */
 
+                    /* 融合位移从 0 开始，记录起点用于求每拍增量 */
+                    pd->race_fuse_cm   = 0.0f;
+                    pd->race_last_trav = traveled;
+                    pd->race_last_tick = HAL_GetTick();
+                    pd->race_slip      = 0U;
+
 #if (LINE_RACE_LEARN_LAP != 0)
                     /* 学习周长：识别点 + 17cm（只做自适应模式） */
                     if ((pd->race_lap_cm <= 0.0f) &&
@@ -570,11 +584,69 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         }
         else if (pd->race_phase == 2U)
         {
-            float approach = traveled - pd->race_detect_cm;
+            /*
+             * ---- 接近段位移：编码器为主 + 陀螺判打滑 ----
+             *
+             * 先说清楚物理：陀螺仪测角速度，【测不出前进距离】。
+             * 它在这里的作用是验证编码器可不可信：
+             * 差速底盘满足 ω_enc = (v右 − v左) / 轮距，
+             * 正常行驶时 ω_enc 必须和陀螺的 ω_gyro 一致；
+             * 偏差过大说明某侧轮打滑/丢计数，此时编码器位移打折，
+             * 剩余权重交给"指令速度 × dt"（接近段速度闭环在 12cm/s，
+             * 稳态下时间积分相当准）。
+             */
+            uint32_t now_ms = HAL_GetTick();
+            float    dt_s   = (float)(now_ms - pd->race_last_tick) * 0.001f;
+            float    ds_enc = traveled - pd->race_last_trav;
+            float    v_cmd  = pd->speed;      /* 本拍实际下发的速度 cm/s */
+            float    weight = 1.0f;
+
+            if ((dt_s <= 0.0f) || (dt_s > 0.2f))
+            {
+                dt_s = (float)LINE_PD_PERIOD_MS * 0.001f;
+            }
+
+            /* 位移异常（负值/单拍跳变过大）直接不信编码器 */
+            if ((ds_enc < 0.0f) || (ds_enc > 10.0f))
+            {
+                ds_enc        = 0.0f;
+                weight        = LINE_RACE_SLIP_WEIGHT;
+                pd->race_slip = 1U;
+            }
+            else
+            {
+                pd->race_slip = 0U;
+            }
+
+            /* 打滑检测：编码器角速度 vs 陀螺角速度 */
+            if (MPU6050_IsReady() != 0U)
+            {
+                float v_l   = Speed_PID_GetMeasure(MOTOR_A);
+                float v_r   = Speed_PID_GetMeasure(MOTOR_B);
+                float w_enc = (v_r - v_l) / LINE_TRACK_WIDTH_CM;       /* rad/s */
+                float w_g   = MPU6050_GetYawRateDps() * 0.01745329f;   /* rad/s */
+                float resid = w_enc - w_g;
+
+                if (resid < 0.0f)
+                {
+                    resid = -resid;
+                }
+
+                if (resid > LINE_RACE_SLIP_RAD_S)
+                {
+                    weight        = LINE_RACE_SLIP_WEIGHT;
+                    pd->race_slip = 1U;
+                }
+            }
+
+            pd->race_fuse_cm  += (ds_enc * weight)
+                               + ((v_cmd * dt_s) * (1.0f - weight));
+            pd->race_last_trav = traveled;
+            pd->race_last_tick = now_ms;
 
             pd->race_pulse++;   /* 借用 race_pulse 当"接近段计时"（20ms/拍） */
 
-            if (approach >= (LINE_RACE_STOP_OFFSET_CM - LINE_RACE_BRAKE_MARGIN_CM))
+            if (pd->race_fuse_cm >= (LINE_RACE_STOP_OFFSET_CM - LINE_RACE_BRAKE_MARGIN_CM))
             {
                 pd->race_phase = 3U;
             }
@@ -2056,6 +2128,10 @@ void LinePD_RaceStart(Line_PD_t *pd, float lap_cm)
     pd->race_pulse     = 0U;
     pd->race_phase     = 0U;
     pd->race_zone      = 0U;   /* 新一次比赛从"不在接近区"开始 */
+    pd->race_fuse_cm   = 0.0f;
+    pd->race_last_trav = 0.0f;
+    pd->race_last_tick = 0U;
+    pd->race_slip      = 0U;
 }
 
 void LinePD_RaceCancel(Line_PD_t *pd)
