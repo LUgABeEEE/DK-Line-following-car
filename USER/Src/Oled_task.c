@@ -176,6 +176,12 @@ static volatile uint8_t s_param_index = TUNE_IDX_KP;
 /* 1 = 下一轮强制重绘（跨任务请求切页时用） */
 static volatile uint8_t s_force_redraw = 0U;
 
+/*
+ * 循迹模式下的刷新冻结标志。
+ * 1 = 已经因为进入 LINE 而冻结（用于区分"刚进 LINE"和"一直在 LINE"）。
+ */
+static uint8_t s_oled_frozen = 0U;
+
 /* 累计接受过的按键次数（诊断用，确认没丢包） */
 static volatile uint32_t s_key1_total = 0U;
 static volatile uint32_t s_key2_total = 0U;
@@ -909,15 +915,56 @@ static void OledTask_Main(void *argument)
          * 如果沿用"数值变化才刷"的策略，停车状态下画面会冻住，
          * 根本看不到探头被遮挡时的变化。
          */
-        if ((s_force_redraw != 0U) ||
-            (s_param_index == TUNE_IDX_SENSOR) ||
-            (s_param_index == TUNE_IDX_MODE) ||
-            (old_index != s_param_index) ||
-            (old_value != OledTask_ReadParam(s_param_index)) ||
-            (g_ctrl_mode != CTRL_MODE_STOP))
+        /*
+         * ---- 循迹运行中【完全冻结刷新】 ----
+         *
+         * 为什么：OLED 和 MPU6050 共用 I2C2。整屏一页 129 字节 @400kHz
+         * 约 3ms，而 MPU 是【阻塞式】读（0.35ms）。跑车时 OLED 不停刷新
+         * 会和 MPU 抢总线，把控制任务（优先级最高）拖住几毫秒 ——
+         * 正好发生在需要及时响应启停线的时刻。
+         *
+         * 循迹模式下车在动、用户也不会去看屏幕，冻结刷新没有副作用：
+         *   - 屏幕停在进 LINE 前的那一帧，肉眼一看就知道在跑车
+         *   - 按键逻辑照常（KEY1/KEY2 打标、长按停车都由别的任务处理）
+         *   - 一停车（STOP）立刻恢复刷新，并强制重绘一次把画面补上
+         *
+         * 需要看实时数据时用串口 [L] 行，不要靠屏幕。
+         */
+        if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
         {
-            OledTask_Draw();
-            s_force_redraw = 0U;
+            /*
+             * 进 LINE 后强制重绘一次（显示"LINE"状态），之后冻结。
+             * s_oled_frozen 用来区分"刚进 LINE"和"一直在 LINE"。
+             */
+            if (s_oled_frozen == 0U)
+            {
+                s_oled_frozen = 1U;
+                OledTask_Draw();
+            }
+            else
+            {
+                /* 冻结：什么都不做 */
+            }
+        }
+        else
+        {
+            if (s_oled_frozen != 0U)
+            {
+                /* 刚退出 LINE：恢复刷新并立刻补一帧 */
+                s_oled_frozen   = 0U;
+                s_force_redraw  = 1U;
+            }
+
+            if ((s_force_redraw != 0U) ||
+                (s_param_index == TUNE_IDX_SENSOR) ||
+                (s_param_index == TUNE_IDX_MODE) ||
+                (old_index != s_param_index) ||
+                (old_value != OledTask_ReadParam(s_param_index)) ||
+                (g_ctrl_mode != CTRL_MODE_STOP))
+            {
+                OledTask_Draw();
+                s_force_redraw = 0U;
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(OLED_TASK_PERIOD_MS));
