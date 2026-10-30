@@ -430,7 +430,7 @@
  * 正好把这个频段的幅度削掉一半，同时只带来约 40ms 相位滞后。
  */
 #define LINE_STEER_OUT_LPF          1.00f   /* ⚠️当前无效：1.0=不滤波（bq 撤销）*/
-#define LINE_STEER_SLEW_CMS         26.0f   /* 每周期差速最大变化量（20ms 周期） */
+#define LINE_STEER_SLEW_CMS         22.0f   /* 每周期差速最大变化量（20ms 周期） */
 
 /*
  * ---- 比赛自动停车（规则：一圈后停在启停线，测试点偏差 ≤2cm 拿满 P）----
