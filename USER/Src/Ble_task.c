@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "dm"
+#define BLE_BUILD_TAG   "dn"
 
 /*
  * UART 发送超时，单位 ms。

@@ -518,9 +518,20 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(BLE_TX_GPIO_Port, &GPIO_InitStruct);
 
+    /*
+     * ⚠️ BLE_RX(PA3) 必须上拉，不能用 NOPULL。
+     *
+     * 比赛时蓝牙模块要拔掉（避免被误认为遥控）。拔掉后 PA3 悬空，
+     * 浮空输入会拾取噪声，随机产生起始位 -> 收到乱码字节 ->
+     * 而命令处理是【无条件】解析的（'X'/'S'/'Q' 都是急停），
+     * 可能在跑车中途被噪声触发急停。
+     *
+     * 上拉之后空闲电平为高，噪声很难凑出一个完整的起始位 + 8 数据位
+     * （9600 波特下要维持约 1ms 的低电平）。
+     */
     GPIO_InitStruct.Pin = BLE_RX_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(BLE_RX_GPIO_Port, &GPIO_InitStruct);
 
     /* USART2 interrupt Init */
