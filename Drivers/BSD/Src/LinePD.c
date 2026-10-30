@@ -481,8 +481,34 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 
                 if (pd->race_lap_cm > 0.0f)
                 {
-                    float expect_cm = pd->race_lap_cm - LINE_RACE_STOP_OFFSET_CM;
+                    float lap       = pd->race_lap_cm;
+                    float expect_cm = lap - LINE_RACE_STOP_OFFSET_CM;
                     float diff_cm   = traveled - expect_cm;
+
+                    /*
+                     * ⚠️ 必须按圈折回，不能只比第一圈。
+                     *
+                     * 原来直接比 [LAP−17−25, LAP−17+25]，那只覆盖第 1 圈。
+                     * 一旦第 1 圈没认到（丢线、脉冲被陀螺闸门挡掉、
+                     * 或者刚好落在窗口外），第 2 圈以后 traveled 变成
+                     * 600+/900+，永远落在窗口外 —— 表现就是
+                     * 【第一圈没停住，后面跑多少圈都不会停了】。
+                     *
+                     * 实测（cu 版）：ra=779.4 / 920.6 / 1233.1 三次都是
+                     * bp=±1.1 的真启停线（第 2.6/3.0/4.0 圈），
+                     * 却全部被单圈窗口拒掉。
+                     *
+                     * 折回做法：把 diff 折叠到 [-lap/2, +lap/2]，
+                     * 于是每一圈的压线点都落在窗口中心附近。
+                     */
+                    while (diff_cm > (lap * 0.5f))
+                    {
+                        diff_cm -= lap;
+                    }
+                    while (diff_cm < -(lap * 0.5f))
+                    {
+                        diff_cm += lap;
+                    }
 
                     if ((diff_cm > -LINE_RACE_DETECT_WINDOW_CM) &&
                         (diff_cm <  LINE_RACE_DETECT_WINDOW_CM))
