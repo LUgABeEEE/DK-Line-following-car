@@ -127,6 +127,7 @@ static void ControlTask_Main(void *argument)
     TickType_t last_outer;
     TickType_t last_gray;
     TickType_t last_speed;
+    uint8_t    speed_tick;
     TickType_t last_mpu;
     TickType_t last_ui;
     uint32_t   fps_counter = 0U;
@@ -204,7 +205,24 @@ static void ControlTask_Main(void *argument)
          * 表现就是"提高采样率后车变抖"。测速窗口必须和速度环同频。
          */
         now = xTaskGetTickCount();
-        if ((now - last_speed) >= pdMS_TO_TICKS(SPEED_PID_PERIOD_MS))
+
+        /*
+         * speed_tick：本拍是否是速度环节拍（20ms）。
+         *
+         * ⚠️ 测速和 PID 【必须同拍】。
+         *
+         * Speed_PID.c 里的 dt 是编译期常量 SPEED_PID_DT_SEC = 20ms，
+         * 不是实测时间。所以 PID 只能 20ms 调一次：
+         *   - 5ms 调一次 -> 积分项每秒累积 4 倍（等效 Ki×4）-> 振荡
+         *   - 而且测速 20ms 才更新，中间 3 拍用的是同一个旧误差，
+         *     积分器对着同一个误差反复累加 -> 纯积分饱和
+         * 上一版把测速门控在 20ms、PID 却留在 5ms，就是这个后果
+         * （表现：车抖得厉害）。
+         */
+        speed_tick = ((now - last_speed) >= pdMS_TO_TICKS(SPEED_PID_PERIOD_MS))
+                     ? 1U : 0U;
+
+        if (speed_tick != 0U)
         {
             last_speed = now;
 
@@ -318,9 +336,12 @@ static void ControlTask_Main(void *argument)
              * （以前外环里直接调 Speed_PID_Update，导致速度环也被
              *   拖到 10Hz，轮子跟不上目标，循迹只要有一点弯就跟不住。）
              */
-            /* 速度环与测速同频（上面那个门控里已经跑过测速） */
-            (void)Speed_PID_Update(MOTOR_A, g_line_pd.left_target);
-            (void)Speed_PID_Update(MOTOR_B, g_line_pd.right_target);
+            /* 速度环只在 20ms 节拍跑（与测速同拍，见 speed_tick 的注释） */
+            if (speed_tick != 0U)
+            {
+                (void)Speed_PID_Update(MOTOR_A, g_line_pd.left_target);
+                (void)Speed_PID_Update(MOTOR_B, g_line_pd.right_target);
+            }
 
             /*
              * 自动停车：外环判定"测试点已到启停线"后，
@@ -386,8 +407,11 @@ static void ControlTask_Main(void *argument)
                     /* 已在目标值，无需调整 */
                 }
 
-                (void)Speed_PID_Update(MOTOR_A, s_ramped_target);
-                (void)Speed_PID_Update(MOTOR_B, s_ramped_target);
+                if (speed_tick != 0U)
+                {
+                    (void)Speed_PID_Update(MOTOR_A, s_ramped_target);
+                    (void)Speed_PID_Update(MOTOR_B, s_ramped_target);
+                }
             }
             break;
 
