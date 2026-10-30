@@ -33,6 +33,23 @@ extern I2C_HandleTypeDef hi2c1;
 extern I2C_HandleTypeDef hi2c2;
 
 /* ------------------------------------------------------------------------- */
+/* 主循环节拍                                                                  */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * 控制任务的主循环周期（ms）。
+ *
+ * 原来等于 SPEED_PID_PERIOD_MS(20ms)，导致所有"子节拍"最快也只能 20ms
+ * 跑一次 —— 灰度采样就算写成 10ms，实际还是 20ms，等于没改。
+ * 现在循环跑 5ms，各功能按自己的 elapsed 判断：
+ *   灰度采样   5ms   （启停线脉冲窗口只有 15~37ms，越快越不容易漏）
+ *   速度环    20ms   （编码器分辨率 0.56cm/s @20ms，更快无意义）
+ *   外环 PD   20ms
+ *   按键/UI   20ms
+ */
+#define CTRL_LOOP_PERIOD_MS     5U
+
+/* ------------------------------------------------------------------------- */
 /* 任务内部状态                                                                */
 /* ------------------------------------------------------------------------- */
 
@@ -109,6 +126,7 @@ static void ControlTask_Main(void *argument)
     TickType_t last_wake;
     TickType_t last_outer;
     TickType_t last_gray;
+    TickType_t last_speed;
     TickType_t last_ui;
     uint32_t   fps_counter = 0U;
 
@@ -122,6 +140,7 @@ static void ControlTask_Main(void *argument)
     last_wake  = xTaskGetTickCount();
     last_outer = last_wake;
     last_gray  = last_wake;
+    last_speed = last_wake;
     last_ui    = last_wake;
 
     for (;;)
@@ -242,8 +261,20 @@ static void ControlTask_Main(void *argument)
              * （以前外环里直接调 Speed_PID_Update，导致速度环也被
              *   拖到 10Hz，轮子跟不上目标，循迹只要有一点弯就跟不住。）
              */
-            (void)Speed_PID_Update(MOTOR_A, g_line_pd.left_target);
-            (void)Speed_PID_Update(MOTOR_B, g_line_pd.right_target);
+            /*
+             * 内环门控到 20ms：主循环现在是 5ms，
+             * 速度环仍然要保持 20ms —— 编码器速度分辨率
+             * （1 计数 = 0.56cm/s @20ms）决定了更快没有意义，
+             * 反而让微分项更噪。
+             */
+            now = xTaskGetTickCount();
+            if ((now - last_speed) >= pdMS_TO_TICKS(SPEED_PID_PERIOD_MS))
+            {
+                last_speed = now;
+
+                (void)Speed_PID_Update(MOTOR_A, g_line_pd.left_target);
+                (void)Speed_PID_Update(MOTOR_B, g_line_pd.right_target);
+            }
 
             /*
              * 自动停车：外环判定"测试点已到启停线"后，
@@ -309,8 +340,14 @@ static void ControlTask_Main(void *argument)
                     /* 已在目标值，无需调整 */
                 }
 
-                (void)Speed_PID_Update(MOTOR_A, s_ramped_target);
-                (void)Speed_PID_Update(MOTOR_B, s_ramped_target);
+                now = xTaskGetTickCount();
+                if ((now - last_speed) >= pdMS_TO_TICKS(SPEED_PID_PERIOD_MS))
+                {
+                    last_speed = now;
+
+                    (void)Speed_PID_Update(MOTOR_A, s_ramped_target);
+                    (void)Speed_PID_Update(MOTOR_B, s_ramped_target);
+                }
             }
             break;
 
@@ -351,7 +388,18 @@ static void ControlTask_Main(void *argument)
 
         s_last_mode = g_ctrl_mode;
 
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(SPEED_PID_PERIOD_MS));
+        /*
+         * 主循环节拍：5ms。
+         *
+         * 原来这里是 SPEED_PID_PERIOD_MS(20ms)，导致所有"子节拍"最快也只能
+         * 20ms 跑一次 —— 灰度采样写 10ms 实际上还是 20ms，等于没改。
+         * 现在循环本身跑 5ms，各功能用各自的 elapsed 判断：
+         *   灰度采样   5ms  （启停线脉冲窗口只有 15~37ms，越快越不容易漏）
+         *   速度环    20ms
+         *   外环 PD   20ms
+         *   按键/UI   20ms
+         */
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CTRL_LOOP_PERIOD_MS));
 
         /* ================= 节拍 2：外环循迹 PD，100ms ================= */
         now = xTaskGetTickCount();
