@@ -157,6 +157,15 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->last_dist_cm   = 0.0f;
     pd->hist_count     = 0U;
     pd->theta_ff       = 0.0f;
+    /*
+     * dθ/dt 状态必须一起清：
+     * theta_prev 若留着上一轮的值（可能 0.5rad），而 theta_rad 已被清 0，
+     * 下一拍会算出 dθ/dt = (0−0.5)/0.02 = −25rad/s，
+     * 经低通后仍有 −10rad/s，前馈 = 0.6×(−10)×8 = −48cm/s（被限幅到 −12），
+     * 起步瞬间车会被猛地拽一下。
+     */
+    pd->theta_prev     = 0.0f;
+    pd->theta_rate     = 0.0f;
     memset(pd->pos_hist,  0, sizeof(pd->pos_hist));
     memset(pd->dist_hist, 0, sizeof(pd->dist_hist));
     pd->commit_target_deg = 0.0f;
