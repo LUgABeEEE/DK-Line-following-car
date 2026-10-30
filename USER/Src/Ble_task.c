@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "cv"
+#define BLE_BUILD_TAG   "cw"
 
 /*
  * UART 发送超时，单位 ms。
@@ -189,6 +189,16 @@ static void BleTask_Print(const char *fmt, ...)
     va_start(args, fmt);
     len = vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
+
+    /*
+     * vsnprintf 返回"原本想写多少字节"；被截断时它 > sizeof(buf)，
+     * 直接拿它当长度会把栈上 buf 之外的内容一起发出去。
+     * 这里夹到缓冲区内。
+     */
+    if (len > (int)sizeof(buf))
+    {
+        len = (int)sizeof(buf) - 1;
+    }
 
     if (len > 0)
     {
@@ -1033,7 +1043,18 @@ uint32_t BleTask_GetStackFreeWords(void)
 
 uint8_t BleTask_SendTag(uint8_t ok)
 {
-    uint8_t item = (ok != 0U) ? 1U : 0U;
+    /*
+     * 原样传递 0/1/2/3：
+     *   0 = [T] FAIL   1 = [T] OK
+     *   2 = [RACE] det 3 = [RACE] stop
+     *
+     * ⚠️ 以前这里写成 (ok != 0U) ? 1U : 0U，把 2/3 全压成 1，
+     *    结果消费端永远走不到 tag==2/3 分支：
+     *      - [RACE] det / [RACE] stop 从来没打印过
+     *      - 每次自动停车反而伪造 2 条 [T] OK（识别一条 + 到位一条），
+     *        把跑圈统计彻底污染
+     */
+    uint8_t item = ok;
 
     if (s_tag_queue == NULL)
     {

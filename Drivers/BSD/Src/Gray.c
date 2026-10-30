@@ -91,6 +91,7 @@ static volatile uint8_t s_ready_buf = 0U;   /* 最近完成的那块 */
 static volatile uint8_t s_ready     = 0U;   /* 1 = 有新帧待消费 */
 static volatile uint8_t s_busy      = 0U;   /* 1 = 传输进行中 */
 static uint32_t         s_busy_tick = 0U;   /* 发起时刻，用于看门狗 */
+static uint16_t         s_fail_count = 0U;  /* DMA 连续失败次数 */
 static I2C_HandleTypeDef *s_hi2c    = NULL;
 
 /*
@@ -136,7 +137,14 @@ void Gray_StartSample(I2C_HandleTypeDef *hi2c)
             return;         /* 上一次还没完成，这一拍跳过 */
         }
 
-        /* 超时：复位外设，避免永久卡在 busy */
+        /*
+         * 超时：复位外设，避免永久卡在 busy。
+         * 同时累加失败计数 —— DMA 化之后 ReadRegisters 不再返回失败，
+         * 如果这里也不记账，LinePD 里"fail_count >= GRAY_FAIL_LIMIT 就
+         * 拒绝开车"的保护会彻底失效（传感器掉线后车会拿最后一帧一直跑）。
+         */
+        s_fail_count++;
+
         (void)HAL_I2C_DeInit(hi2c);
         (void)HAL_I2C_Init(hi2c);
         s_busy = 0U;
@@ -376,12 +384,28 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
      * 5ms 采样 + 0.56ms 传输，正常情况下每拍都有新帧；
      * 偶尔跳过一拍属于正常抖动，累计到 fail_count 会误判丢线。
      */
+    /*
+     * DMA 连续失败：把计数暴露给上层（LinePD 用它判断"传感器掉线"）。
+     * 只要拿到过一帧就清零，反映的是"当前是否处于故障状态"。
+     */
+    if (s_fail_count >= GRAY_FAIL_LIMIT)
+    {
+        sensor->fail_count = s_fail_count;
+
+        if (s_ready == 0U)
+        {
+            sensor->line_valid = 0U;
+            return 2U;
+        }
+    }
+
     if (s_ready == 0U)
     {
         return 1U;
     }
 
-    s_ready = 0U;
+    s_ready     = 0U;
+    s_fail_count = 0U;
 
     /* 累计计数：每次真正拿到一帧才算一次读取 */
     sensor->total_reads++;

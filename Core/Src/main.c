@@ -300,7 +300,7 @@ int main(void)
   if (BleTask_Init() == 0U)
   {
     HAL_UART_Transmit(&huart2, (uint8_t *)"[FATAL] BleTask create FAILED\r\n",
-                      33U, 100U);
+                      (uint16_t)(sizeof("[FATAL] BleTask create FAILED\r\n") - 1U), 100U);
     Error_Handler();
   }
 
@@ -312,7 +312,7 @@ int main(void)
   if (ControlTask_Init() == 0U)
   {
     HAL_UART_Transmit(&huart2, (uint8_t *)"[FATAL] ControlTask create FAILED\r\n",
-                      36U, 100U);
+                      (uint16_t)(sizeof("[FATAL] ControlTask create FAILED\r\n") - 1U), 100U);
     Error_Handler();
   }
 
@@ -323,7 +323,7 @@ int main(void)
   if (OledTask_Init() == 0U)
   {
     HAL_UART_Transmit(&huart2, (uint8_t *)"[FATAL] OledTask create FAILED (heap?)\r\n",
-                      42U, 100U);
+                      (uint16_t)(sizeof("[FATAL] OledTask create FAILED (heap?)\r\n") - 1U), 100U);
     Error_Handler();
   }
 
