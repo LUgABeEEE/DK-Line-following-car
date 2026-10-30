@@ -191,6 +191,67 @@ static uint8_t Gray_SceneFamilyConfirmNeed(uint8_t prev_fam, uint8_t next_fam)
 /* 核心：读一次并解算                                                          */
 /* ------------------------------------------------------------------------- */
 
+/*
+ * 启停线空间特征判断（三判据）。
+ *
+ * 启停线是一条 5cm 横线，压在阵列中间时：
+ *     0 0 1 1 1 1 1 0        <- 中间连续黑，两边各留白
+ *
+ * 而其它"多路黑"的场景都不满足"两边留白"：
+ *     直角弯/全黑  1 1 1 1 1 1 1 1   -> 最左/最右都是黑，排除
+ *     侧边 SIDE    0 0 0 0 1 1 1 1   -> 最右到边，排除
+ *     分叉 FORK    1 1 1 0 0 1 1 1   -> 黑不连续，排除
+ *     正常循迹     0 0 0 1 1 0 0 0   -> 只有 2 路，数量不够，排除
+ *
+ * 这也是为什么阈值可以从 6 降到 4：真正的区分靠"两边留白"，
+ * 不再依赖"几乎全黑"。而 4 路的窗口有 15.5mm（28ms），
+ * 20ms 采样能稳定抓到；5 路只有 4mm（7ms），会漏检。
+ */
+static uint8_t Gray_IsStopBarPattern(const Gray_Sensor_t *sensor)
+{
+    uint8_t i;
+    uint8_t first = 0xFFU;
+    uint8_t last  = 0U;
+    uint8_t count = 0U;
+
+    for (i = 0U; i < GRAY_CHANNEL_COUNT; i++)
+    {
+        if (sensor->channel[i] != 0U)
+        {
+            if (first == 0xFFU)
+            {
+                first = i;
+            }
+            last = i;
+            count++;
+        }
+    }
+
+    /* ① 黑色通道数必须够 */
+    if (count < GRAY_STOP_BAR_CHANNELS)
+    {
+        return 0U;
+    }
+
+    /* ② 黑色必须连续（排除分叉） */
+    if ((uint8_t)(last - first + 1U) != count)
+    {
+        return 0U;
+    }
+
+    /* ③ 两边都必须留白（排除直角弯全黑、半边黑的侧边） */
+    if (first == 0U)
+    {
+        return 0U;
+    }
+    if (last == (GRAY_CHANNEL_COUNT - 1U))
+    {
+        return 0U;
+    }
+
+    return 1U;
+}
+
 uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
 {
     uint8_t raw_analog[GRAY_CHANNEL_COUNT * 2U];
@@ -260,7 +321,7 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
      * 5cm 横线：8 路同时黑 1~3 拍；角点/宽黑带持续更久。
      * 结果锁存在 stop_bar_seen，由 LinePD 消费（外环 40ms 可能整拍漏掉）。
      */
-    if (sensor->active_count >= GRAY_STOP_BAR_CHANNELS)
+    if (Gray_IsStopBarPattern(sensor) != 0U)
     {
         if (sensor->stop_pulse < 0xFFU)
         {
