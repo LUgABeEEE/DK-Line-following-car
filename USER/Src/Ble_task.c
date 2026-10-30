@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "cq"
+#define BLE_BUILD_TAG   "cr"
 
 /*
  * UART 发送超时，单位 ms。
@@ -640,11 +640,13 @@ static void BleTask_DumpPid(uint8_t dump_speed)
  */
 static void BleTask_DumpGains(void)
 {
-    char line[128];
+    char line[192];
     char b1[14];
     char b2[14];
     char b3[14];
     char b4[14];
+    char b5[14];
+    char b6[14];
 
     (void)snprintf(line, sizeof(line), "[K] A kp%s ki%s kd%s kff%s\r\n",
                    BleTask_Fmt1(b1, sizeof(b1),
@@ -662,10 +664,15 @@ static void BleTask_DumpGains(void)
      * 外环增益单独一行。
      * 之前只输出了内环，排查循迹问题时看不到 LKP/LKD，只能靠反推。
      */
-    (void)snprintf(line, sizeof(line), "[P] lkp%s lkd%s lbas%s\r\n",
+    (void)snprintf(line, sizeof(line),
+                   "[P] lkp%s lkd%s lbas%s lap%s zone%s arm%s\r\n",
                    BleTask_Fmt1(b1, sizeof(b1), g_line_pd.kp),
                    BleTask_Fmt1(b2, sizeof(b2), g_line_pd.kd),
-                   BleTask_Fmt1(b3, sizeof(b3), g_line_pd.base_speed));
+                   BleTask_Fmt1(b3, sizeof(b3), g_line_pd.base_speed),
+                   BleTask_Fmt1(b4, sizeof(b4), g_race_lap_cm),
+                   BleTask_Fmt1(b5, sizeof(b5), LINE_RACE_ZONE_SPEED_CMS),
+                   BleTask_Fmt1(b6, sizeof(b6),
+                                g_line_pd.race_lap_cm * LINE_RACE_ZONE_FRAC));
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
                             (uint16_t)strlen(line), BLE_TX_TIMEOUT_MS);
 }

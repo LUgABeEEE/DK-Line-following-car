@@ -173,6 +173,14 @@ static void ControlTask_Main(void *argument)
                 LinePD_Reset(&g_line_pd);
 
                 /* 启动比赛自动停车（g_race_lap_cm=0 时等于关闭） */
+                /*
+                 * 启动比赛自动停车。
+                 *
+                 * ⚠️ 这里【不能】直接打印：BleTask_Print 是阻塞 UART 发送，
+                 *    放在控制环里会拖住 5ms 节拍。参数是否生效统一由
+                 *    BLE 任务的 [P] 行显示（lap=全局值 arm=实际武装点）：
+                 *    两者不一致就说明参数没进到 LinePD。
+                 */
                 LinePD_RaceStart(&g_line_pd, g_race_lap_cm);
                 s_race_announced = 0U;
                 s_race_last_phase = 0U;
