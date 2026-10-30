@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "dk"
+#define BLE_BUILD_TAG   "dl"
 
 /*
  * UART 发送超时，单位 ms。
@@ -885,8 +885,13 @@ static void BleTask_Main(void *argument)
                 if (tag == 2U)
                 {
                     /* 自动停车：识别到启停线（控制任务只入队，不阻塞串口） */
-                    BleTask_Print("[RACE] det d%u t%lu\r\n",
-                                  (unsigned int)(g_line_pd.race_detect_cm - g_line_pd.race_start_cm),
+                    /*
+                     * race_detect_cm 里存的已经是"相对起点的里程"
+                     * （LinePD 里赋的是 traveled），不能再减 race_start_cm，
+                     * 否则日志里永远是 d0，看不出识别点在哪。
+                     */
+                    BleTask_Print("[RACE] det d%.0f t%lu\r\n",
+                                  (double)g_line_pd.race_detect_cm,
                                   (unsigned long)HAL_GetTick());
                 }
                 else if (tag == 3U)
