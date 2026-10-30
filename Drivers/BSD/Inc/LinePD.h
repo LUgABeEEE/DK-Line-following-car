@@ -689,6 +689,23 @@
 #define LINE_PD_DFLT_D_FILTER       0.5f
 
 /*
+ * 微分窗口（拍数，20ms/拍）。
+ *
+ * 原来用相邻两拍（1 拍 = 20ms）算微分：
+ *     D = kd × Δe / 0.02 = 0.6 × 50 × Δe = 30 × Δe
+ * 灰度质心在直线上本来就有约 1cm 抖动，被放大 30 倍后
+ * 只要抖 1.2cm 就把差速限幅（35）打满 —— 实测就是这样：
+ *     e0.8 -> s-16.9（符号都反了）、e1.0 -> s+18.7、e-1.0 -> s-18.5
+ * 误差一直在 ±1.2cm，转向却在 ±33 之间摆。
+ *
+ * 改成跨 3 拍（60ms）算微分：
+ *     同样 1cm 抖动 -> de/dt 变成 1/3 -> D 输出降到 10
+ * 白噪声按 √3 衰减，而且 P 项完全不受影响（只有 D 项变慢）。
+ * 代价：D 项的相位滞后增加 40ms，对 2~3Hz 的振荡影响很小。
+ */
+#define LINE_D_WINDOW_TICKS         3U
+
+/*
  * 丢线容忍的连续周期数。超过之后按着下面两个开关处理。
  * 1 个周期 = LINE_PD_PERIOD_MS。
  */
@@ -1203,6 +1220,9 @@ typedef struct
     float   last_dist_cm;   /* 上一拍的两轮平均里程                                   */
 
     /* 最近 3 个 (位置, 里程) 样本，用最小二乘斜率估 θ，比两点差分抗噪 */
+    float   err_hist[4];    /* 误差历史，用于跨拍微分（LINE_D_WINDOW_TICKS）  */
+    uint8_t err_hist_idx;
+    uint8_t err_hist_fill;
     float   pos_hist[3];
     float   dist_hist[3];
     uint8_t hist_count;

@@ -148,6 +148,9 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->error          = 0.0f;
     pd->last_error     = 0.0f;
     pd->d_filter_state = 0.0f;
+    pd->err_hist_idx   = 0U;
+    pd->err_hist_fill  = 0U;
+    memset(pd->err_hist, 0, sizeof(pd->err_hist));
     pd->steer          = 0.0f;
     pd->speed          = 0.0f;
     pd->straight_ticks = 0U;
@@ -1080,11 +1083,52 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         pd->first_run  = 0U;
         pd->last_error = error;
         derivative     = 0.0f;
+
+        /* 历史照常写入，恢复微分时窗口里才是连续的样本 */
+        pd->err_hist[pd->err_hist_idx] = error;
+        pd->err_hist_idx = (uint8_t)((pd->err_hist_idx + 1U) & 0x03U);
+
+        if (pd->err_hist_fill < (LINE_D_WINDOW_TICKS + 1U))
+        {
+            pd->err_hist_fill++;
+        }
     }
     else
     {
-        float dt_sec = (float)LINE_PD_PERIOD_MS / 1000.0f;
-        derivative = (error - pd->last_error) / dt_sec;
+        /*
+         * 跨 LINE_D_WINDOW_TICKS 拍算微分（不是相邻两拍）。
+         *
+         * err_hist 是一个环形缓冲：写入本拍误差，再取"窗口前的那个值"。
+         * 这样分母是 3×20ms=60ms，白噪声对微分的影响降到 1/√3，
+         * 而 P 项完全不变。
+         */
+        uint8_t back = (uint8_t)((pd->err_hist_idx + 4U - LINE_D_WINDOW_TICKS) & 0x03U);
+
+        pd->err_hist[pd->err_hist_idx] = error;
+        pd->err_hist_idx = (uint8_t)((pd->err_hist_idx + 1U) & 0x03U);
+
+        /*
+         * 需要 WINDOW+1 个样本才能算"跨 WINDOW 拍的差"：
+         * 缓冲深 4，窗口 3，第 4 个样本写入后最早的样本才有效。
+         * （这里踩过一次：只判 fill >= WINDOW 会在第 3 拍就计算，
+         *   而那时 back 指向的还是未写入的 0，会产生一个巨大的假微分。）
+         */
+        if (pd->err_hist_fill < (LINE_D_WINDOW_TICKS + 1U))
+        {
+            pd->err_hist_fill++;
+        }
+
+        if (pd->err_hist_fill >= (LINE_D_WINDOW_TICKS + 1U))
+        {
+            float dt_sec = (float)(LINE_D_WINDOW_TICKS * LINE_PD_PERIOD_MS) / 1000.0f;
+
+            derivative = (error - pd->err_hist[back]) / dt_sec;
+        }
+        else
+        {
+            derivative = 0.0f;   /* 历史还没填满，先不做微分 */
+        }
+
         pd->last_error = error;
     }
     pd->all_assist = assist;
