@@ -209,7 +209,31 @@ void LinePD_SetGains(Line_PD_t *pd, float kp, float kd, float base_speed)
     pd->kd         = kd;
     pd->base_speed = base_speed;
 
-    LinePD_Reset(pd);
+    /*
+     * ⚠️ Reset 会把 race_* 全部清零（race_enabled / race_lap_cm /
+     *    race_zone / race_phase ...），而这里是"改增益"的接口。
+     *    如果哪天有人在跑车中途调增益，比赛逻辑会被无声关掉 ——
+     *    表现就是"设了 LAP 却完全没反应"。所以先把比赛状态存下来再恢复。
+     */
+    {
+        uint8_t  saved_enabled  = pd->race_enabled;
+        uint8_t  saved_phase    = pd->race_phase;
+        uint8_t  saved_zone     = pd->race_zone;
+        uint8_t  saved_pulse    = pd->race_pulse;
+        float    saved_lap      = pd->race_lap_cm;
+        float    saved_start    = pd->race_start_cm;
+        float    saved_detect   = pd->race_detect_cm;
+
+        LinePD_Reset(pd);
+
+        pd->race_enabled   = saved_enabled;
+        pd->race_phase     = saved_phase;
+        pd->race_zone      = saved_zone;
+        pd->race_pulse     = saved_pulse;
+        pd->race_lap_cm    = saved_lap;
+        pd->race_start_cm  = saved_start;
+        pd->race_detect_cm = saved_detect;
+    }
 }
 
 void LinePD_Stop(Line_PD_t *pd)
@@ -326,6 +350,18 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
     {
         float traveled = LinePD_RaceTravel(pd) - pd->race_start_cm;
 
+        /*
+         * ⚠️ 脉冲标志在这里【无条件取走并清零】。
+         *
+         * 以前只在 phase==1 的分支里清，结果：
+         *   phase 0（未武装）和 phase 2（接近中）期间检测到的脉冲会一直锁存，
+         *   等到刚进入 phase 1 的那一刻立刻被当成"识别到启停线"消费掉 ——
+         *   表现为"刚进接近区就停车"，或者"在终点前老远就停了"。
+         * 现在无论哪个阶段，每拍都把标志取走，只有 phase 1 会使用它。
+         */
+        uint8_t pulse = gray->stop_bar_seen;
+        gray->stop_bar_seen = 0U;
+
         if (pd->race_phase == 0U)
         {
             /*
@@ -428,11 +464,37 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                     }
                 }
 
-                if ((yaw_ok != 0U) &&
+                /*
+                 * 周长模式下的"里程窗口"：灰度条应该压线时 traveled ≈ LAP−17。
+                 * 只有落在这个窗口里的脉冲才算数（见 LINE_RACE_DETECT_WINDOW_CM
+                 * 的注释），把 80% 武装到压线前这段路上的误检全部排除。
+                 * 自适应模式没有周长，只能退回"跑够 MIN_CM"的粗判据。
+                 */
+                uint8_t dist_ok = 0U;
+
+                if (pd->race_lap_cm > 0.0f)
+                {
+                    float expect_cm = pd->race_lap_cm - LINE_RACE_STOP_OFFSET_CM;
+                    float diff_cm   = traveled - expect_cm;
+
+                    if ((diff_cm > -LINE_RACE_DETECT_WINDOW_CM) &&
+                        (diff_cm <  LINE_RACE_DETECT_WINDOW_CM))
+                    {
+                        dist_ok = 1U;
+                    }
+                }
+                else if (traveled >= LINE_RACE_DETECT_MIN_CM)
+                {
+                    dist_ok = 1U;
+                }
+                else
+                {
+                    /* 自适应且里程不够：不认 */
+                }
+
+                if ((pulse != 0U) && (yaw_ok != 0U) && (dist_ok != 0U) &&
                     (gray->stop_bar_pos_mm * 0.1f > -LINE_RACE_DETECT_ERR_CM) &&
-                    (gray->stop_bar_pos_mm * 0.1f <  LINE_RACE_DETECT_ERR_CM) &&
-                    ((pd->race_lap_cm > 0.0f) ||
-                     (traveled >= LINE_RACE_DETECT_MIN_CM)))
+                    (gray->stop_bar_pos_mm * 0.1f <  LINE_RACE_DETECT_ERR_CM))
                 {
                     pd->race_phase     = 2U;
                     pd->race_detect_cm = traveled;
@@ -456,14 +518,13 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                     }
 #endif
                 }
-                gray->stop_bar_seen = 0U;
             }
 
-            /* 兜底：有周长按周长到位，自适应模式按最大里程强制停 */
+            /* 兜底：识别失败时防止跑飞的过冲保护（不是主停车手段） */
             if (pd->race_phase == 1U)
             {
                 if ((pd->race_lap_cm > 0.0f) &&
-                    (traveled >= (pd->race_lap_cm - LINE_RACE_FALLBACK_CM)))
+                    (traveled >= (pd->race_lap_cm + LINE_RACE_FALLBACK_CM)))
                 {
                     pd->race_phase = 3U;
                 }

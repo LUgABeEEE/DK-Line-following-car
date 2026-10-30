@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "cr"
+#define BLE_BUILD_TAG   "cs"
 
 /*
  * UART 发送超时，单位 ms。
@@ -671,8 +671,15 @@ static void BleTask_DumpGains(void)
                    BleTask_Fmt1(b3, sizeof(b3), g_line_pd.base_speed),
                    BleTask_Fmt1(b4, sizeof(b4), g_race_lap_cm),
                    BleTask_Fmt1(b5, sizeof(b5), LINE_RACE_ZONE_SPEED_CMS),
+                   /*
+                    * arm 用【全局 LAP】算，而不是 pd->race_lap_cm：
+                    * 进 LINE 之前 pd->race_lap_cm 还是 0（Reset 清过），
+                    * 那样打印出来永远是 arm0，看不出参数对不对。
+                    */
                    BleTask_Fmt1(b6, sizeof(b6),
-                                g_line_pd.race_lap_cm * LINE_RACE_ZONE_FRAC));
+                                (g_race_lap_cm >= 50.0f)
+                                ? (g_race_lap_cm * LINE_RACE_ZONE_FRAC)
+                                : 0.0f));
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,
                             (uint16_t)strlen(line), BLE_TX_TIMEOUT_MS);
 }
