@@ -520,29 +520,19 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                 }
             }
 
-            /* 兜底：识别失败时防止跑飞的过冲保护（不是主停车手段） */
-            if (pd->race_phase == 1U)
-            {
-                if ((pd->race_lap_cm > 0.0f) &&
-                    (traveled >= (pd->race_lap_cm + LINE_RACE_FALLBACK_CM)))
-                {
-                    pd->race_phase = 3U;
-                }
-#if (LINE_RACE_LEARN_LAP != 0)
-                else if ((pd->race_lap_cm <= 0.0f) &&
-                         (s_learned_lap_cm > 0.0f) &&
-                         (traveled >= (s_learned_lap_cm - LINE_RACE_FALLBACK_CM)))
-                {
-                    /* 自适应模式：用上次学到的周长兜底（高速漏检时靠它） */
-                    pd->race_phase = 3U;
-                }
-#endif
-                else if ((pd->race_lap_cm <= 0.0f) &&
-                         (traveled >= LINE_RACE_MAX_CM))
-                {
-                    pd->race_phase = 3U;
-                }
-            }
+            /*
+             * 这里【故意没有任何"按里程停车"的兜底】。
+             *
+             * 2026-10-30 用户明确要求：停车只能由启停线识别触发。
+             * 之前的三条里程兜底（LAP−2 / 学习周长 / MAX_CM）虽然能防跑飞，
+             * 但它们的共同问题是【分不清"识别失败"和"识别成功但晚了一点"】，
+             * 结果就是不管有没有压到启停线，跑到里程就停 ——
+             * 表现为"还没到终点就停了"，把真正的识别逻辑架空。
+             *
+             * 代价：如果识别一直失败，车会一直跑下去。
+             * 这是有意为之：跑过头可以手动停（长按 KEY2 / 蓝牙 X），
+             * 但提前停会把整圈成绩作废。
+             */
         }
         else if (pd->race_phase == 2U)
         {
