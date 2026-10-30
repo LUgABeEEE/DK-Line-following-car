@@ -532,7 +532,7 @@
  *     周期改成 20ms（dt 变小）          -> 同样的 KD 变得更凶，必须调小
  *   改外环周期后如果出现抖动，第一个要怀疑的就是 KD。
  */
-#define LINE_PD_DFLT_KD             1.0f
+#define LINE_PD_DFLT_KD             1.6f
 
 /*
  * 基础速度由上面的「赛道档位」决定（LINE_SIMPLE_PROFILE）：
