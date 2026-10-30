@@ -129,6 +129,7 @@ void LinePD_Init(Line_PD_t *pd)
     pd->d_filter    = LINE_PD_DFLT_D_FILTER;
     pd->alat_max    = LINE_ALAT_MAX_DFLT;
     pd->race_zone   = 0U;
+    pd->race_brake_margin = LINE_RACE_BRAKE_MARGIN_CM;
     pd->race_seen   = 0U;
     pd->race_reject = 0U;
     pd->wide_steer  = 0U;
@@ -597,7 +598,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 
             pd->race_pulse++;   /* 借用 race_pulse 当"接近段计时"（20ms/拍） */
 
-            if (approach >= (LINE_RACE_STOP_OFFSET_CM - LINE_RACE_BRAKE_MARGIN_CM))
+            if (approach >= (LINE_RACE_STOP_OFFSET_CM - pd->race_brake_margin))
             {
                 pd->race_phase = 3U;
             }
@@ -2103,6 +2104,27 @@ void LinePD_RaceStart(Line_PD_t *pd, float lap_cm)
     pd->race_zone      = 0U;   /* 新一次比赛从"不在接近区"开始 */
     pd->race_seen      = 0U;
     pd->race_reject    = 0U;
+}
+
+void LinePD_SetRaceBrakeMargin(Line_PD_t *pd, float margin_cm)
+{
+    if (pd == NULL)
+    {
+        return;
+    }
+
+    if (margin_cm < 0.0f)
+    {
+        margin_cm = 0.0f;
+    }
+
+    /* 不能超过 17cm，否则"一识别就停"，车会停在终点前很远 */
+    if (margin_cm > LINE_RACE_STOP_OFFSET_CM)
+    {
+        margin_cm = LINE_RACE_STOP_OFFSET_CM;
+    }
+
+    pd->race_brake_margin = margin_cm;
 }
 
 void LinePD_RaceCancel(Line_PD_t *pd)

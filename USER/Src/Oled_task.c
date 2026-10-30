@@ -79,7 +79,8 @@ typedef struct
 #define TUNE_IDX_LBAS       10U
 #define TUNE_IDX_LAP        11U     /* 比赛自动停车：一圈周长 cm */
 #define TUNE_IDX_ALAT       12U     /* 曲率限速：允许最大侧向加速度 */
-#define TUNE_PARAM_COUNT    13U
+#define TUNE_IDX_MARG       13U     /* 自动停车：刹车余量 cm（步长 0.5） */
+#define TUNE_PARAM_COUNT    14U
 
 static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
 {
@@ -147,6 +148,7 @@ static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
      * 之所以用 10cm 步长：周长是几百上千厘米，1cm 步长要按几百次。
      */
     { "LAP",    30.00f,   0.00f, 3000.00f },
+    { "MARG",    0.50f,   0.00f,   17.00f },   /* 刹车余量：走 17−MARG 厘米后停 */
     /*
      * ALAT: 曲率限速允许的最大侧向加速度，单位 cm/s²（步长 5）。
      *   100 = 0.1g，实测参考值：
@@ -264,6 +266,11 @@ static float OledTask_ReadParam(uint8_t idx)
         return g_line_pd.alat_max;
     }
 
+    if (idx == TUNE_IDX_MARG)
+    {
+        return g_line_pd.race_brake_margin;
+    }
+
     /* 左右轮参数始终同步，读 A 的就行 */
     return Speed_PID_GetGain(MOTOR_A, idx);
 }
@@ -346,6 +353,18 @@ static void OledTask_WriteParam(uint8_t idx, float value)
          * 跑起来。现在两者彻底解耦：SPD 的速度只由 TARGET 参数控制。
          */
         g_line_pd.base_speed = value;
+        return;
+    }
+
+    if (idx == TUNE_IDX_MARG)
+    {
+        /*
+         * 刹车余量：运行时立即生效（不需要重进循迹）。
+         * 走 17 − MARG 厘米后停车：
+         *   MARG 大 -> 提前停；MARG 小 -> 晚点停。
+         * 上限 17（一识别就停），下限 0（走到 17cm 才停）。
+         */
+        LinePD_SetRaceBrakeMargin(&g_line_pd, value);
         return;
     }
 

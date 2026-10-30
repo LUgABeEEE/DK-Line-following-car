@@ -1164,6 +1164,7 @@ typedef struct
     float d_filter;         /* 微分低通系数 (0,1]                             */
     float alat_max;         /* 曲率限速用：允许的最大侧向加速度 cm/s²         */
     uint8_t race_zone;      /* 1 = 已进入终点接近区（限速 + 武装）             */
+    float   race_brake_margin; /* 刹车余量 cm，运行时可调（默认 3.0）           */
     uint16_t race_seen;     /* 脉冲被 LinePD 看到的次数（诊断用）              */
     uint16_t race_reject;   /* 看到但被关卡拒掉的次数（诊断用）                */
 
@@ -1307,6 +1308,12 @@ void LinePD_SetGains(Line_PD_t *pd, float kp, float kd, float base_speed);
  *   LinePD_RacePhase(pd)          当前阶段（调试用）。
  */
 void    LinePD_RaceStart(Line_PD_t *pd, float lap_cm);
+
+/*
+ * 设置刹车余量（cm）：停车判定走 17 − margin 厘米后停车。
+ * 可在运行时调（OLED 参数页 MARG，步长 0.5），不需要重进循迹模式。
+ */
+void    LinePD_SetRaceBrakeMargin(Line_PD_t *pd, float margin_cm);
 void    LinePD_RaceCancel(Line_PD_t *pd);
 uint8_t LinePD_RaceDone(const Line_PD_t *pd);
 
