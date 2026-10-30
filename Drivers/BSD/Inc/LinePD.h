@@ -237,7 +237,7 @@
 #define LINE_LEAD_DERR_MAX          80.0f
 
 /* 直道加速的判定门槛：误差、差速、每拍增量（这三项与档位无关） */
-#define LINE_STRAIGHT_EPS_CM        0.35f
+#define LINE_STRAIGHT_EPS_CM        0.57f    /* =0.35cm(旧标定)×1.643 */
 #define LINE_STRAIGHT_STEER_CM      8.0f
 #define LINE_STRAIGHT_BOOST_STEP    0.03f
 #define LINE_BOOST_DECAY_STEP       0.06f
@@ -413,8 +413,8 @@
  *   |e| >= GAIN_E1        -> ×(1+GAIN_MAX)
  *   |e|=2.5 时约 ×1.6，steer 22.6 -> 36，内侧轮 55-36 ≈ 19 -> 停转区
  * ========================================================================= */
-#define LINE_STEER_GAIN_E0_CM       1.50f   /* 误差低于这个不放大               */
-#define LINE_STEER_GAIN_E1_CM       2.50f   /* 误差到这个值时放大到最大         */
+#define LINE_STEER_GAIN_E0_CM       2.46f   /* =1.50×1.643（新标定）            */
+#define LINE_STEER_GAIN_E1_CM       4.11f   /* =2.50×1.643（新标定）            */
 #define LINE_STEER_GAIN_MAX         0.00f   /* br 撤销：实测放大加剧振荡        */
 
 /*
@@ -449,7 +449,7 @@
 #define LINE_RACE_ARM_FRAC          0.50f   /* 跑过半圈才允许识别启停线 */
 #define LINE_RACE_DETECT_CHANNELS   6U      /* 8 路里至少几路全黑 */
 #define LINE_RACE_PULSE_MAX         3U      /* 全黑持续超过这么多拍 = 角点，不算 */
-#define LINE_RACE_DETECT_ERR_CM     1.2f    /* 识别时横向误差必须小 */
+#define LINE_RACE_DETECT_ERR_CM     2.0f    /* =1.2cm(旧标定)×1.643 */
 #define LINE_RACE_APPROACH_CMS      12.0f   /* 识别后的接近速度 */
 /*
  * 到点前多少厘米开始硬刹。
@@ -628,7 +628,7 @@
  * 0.5cm 的依据：通道间距 7mm，半个通道以内的位置无法可靠区分方向，
  * 取 0.5cm 略大于半个通道。
  */
-#define LINE_SEARCH_MIN_INFO_CM     0.5f
+#define LINE_SEARCH_MIN_INFO_CM     0.82f   /* =0.5cm(旧标定)×1.643 */
 
 /*
  * 没有任何方向信息时，搜索的【起始方向】。
@@ -726,8 +726,8 @@
  *       防止直道上一帧抖动就把方向打满。
  * ========================================================================= */
 #define LINE_DIFF_WIDE_LIMIT        35.0f   /* br 撤销：与基础限幅一致            */
-#define LINE_DIFF_WIDE_ENTER_CM     1.50f   /* |e| 超过这个进入宽差速               */
-#define LINE_DIFF_WIDE_EXIT_CM      1.00f   /* |e| 低于这个退出宽差速               */
+#define LINE_DIFF_WIDE_ENTER_CM     2.46f   /* =1.50×1.643（新标定）               */
+#define LINE_DIFF_WIDE_EXIT_CM      1.64f   /* =1.00×1.643（新标定）               */
 #define LINE_DIFF_WIDE_THETA_RAD    0.30f   /* 或线角超过这个也进入宽差速           */
 
 /* 进入角点事件需要连续多少拍（Gray 已做帧级防抖，这里只需再确认 1 拍） */
@@ -746,7 +746,7 @@
  * 却会触发角点事件 -> 承诺转向 -> 车越走越摆。
  * 真直角时线压在阵列边缘，|e| 会接近满幅（2.5cm）。
  */
-#define LINE_CORNER_TRIGGER_ERR_CM   2.0f
+#define LINE_CORNER_TRIGGER_ERR_CM   3.3f    /* =2.0cm(旧标定)×1.643 */
 
 /*
  * Gray 20ms 级 SIDE 锁存的有效期。
@@ -859,7 +859,7 @@
  * 直角不要转太大：转多了出弯腿会落到车身后方，只能靠反向搜索找回来。
  */
 #define LINE_RIGHT_ANGLE_TURN_DEG    90.0f
-#define LINE_RIGHT_ANGLE_MIN_ERR_CM  1.2f   /* 丢线时误差至少这么大才算直角 */
+#define LINE_RIGHT_ANGLE_MIN_ERR_CM  2.0f   /* =1.2cm(旧标定)×1.643 */
 
 /*
  * 角点期间遇到 ALL（整片全黑）时，改用锁存方向满舵。
