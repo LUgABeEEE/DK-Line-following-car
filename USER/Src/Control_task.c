@@ -195,7 +195,21 @@ static void ControlTask_Main(void *argument)
         }
 
         /* ================= 节拍 1：内环速度环，20ms ================= */
-        Encoder_UpdateSpeed();
+        /*
+         * ⚠️ 编码器测速必须保持 20ms 窗口。
+         *
+         * 主循环改成 5ms 后这里曾被无条件每拍调用，等于把测速窗口缩到 5ms：
+         *   20ms 下 1 计数 = 0.56cm/s，5ms 下 1 计数 = 2.26cm/s
+         * 同样一个计数抖动，速度反馈噪声放大 4 倍，速度环微分项跟着噪，
+         * 表现就是"提高采样率后车变抖"。测速窗口必须和速度环同频。
+         */
+        now = xTaskGetTickCount();
+        if ((now - last_speed) >= pdMS_TO_TICKS(SPEED_PID_PERIOD_MS))
+        {
+            last_speed = now;
+
+            Encoder_UpdateSpeed();
+        }
 
         /*
          * 陀螺仪：读角速度 + 积分航向，门控在 20ms。
@@ -221,7 +235,15 @@ static void ControlTask_Main(void *argument)
          * 导致初始化失败。这里每 3 秒重试一次；只有车停着（STOP）才标定，
          * 避免把行驶中的角速度当零偏。
          */
-        if (MPU6050_IsReady() == 0U)
+        /*
+         * MPU6050 掉线重试：只在【停车】状态下做。
+         *
+         * MPU6050_Init 内部有 HAL_Delay(30) + HAL_Delay(60)，
+         * MPU6050_Calibrate(100) 又是 100 次 HAL_Delay(2) ——
+         * 合计 90~300ms 的阻塞。放在控制环里跑车时会卡住 5ms 节拍，
+         * 正好可能错过启停线。停车时重试没有任何副作用。
+         */
+        if ((MPU6050_IsReady() == 0U) && (g_ctrl_mode == CTRL_MODE_STOP))
         {
             static uint32_t s_mpu_retry_tick = 0U;
 
@@ -231,10 +253,7 @@ static void ControlTask_Main(void *argument)
 
                 if (MPU6050_Init(&hi2c2) != 0U)
                 {
-                    if (g_ctrl_mode == CTRL_MODE_STOP)
-                    {
-                        (void)MPU6050_Calibrate(100U);
-                    }
+                    (void)MPU6050_Calibrate(100U);
                 }
             }
         }
@@ -299,18 +318,9 @@ static void ControlTask_Main(void *argument)
              * （以前外环里直接调 Speed_PID_Update，导致速度环也被
              *   拖到 10Hz，轮子跟不上目标，循迹只要有一点弯就跟不住。）
              */
-            /*
-             * 内环门控到 20ms：主循环是 5ms，但速度环保持 20ms ——
-             * 编码器分辨率 1 计数 = 0.56cm/s @20ms，更快没有意义。
-             */
-            now = xTaskGetTickCount();
-            if ((now - last_speed) >= pdMS_TO_TICKS(SPEED_PID_PERIOD_MS))
-            {
-                last_speed = now;
-
-                (void)Speed_PID_Update(MOTOR_A, g_line_pd.left_target);
-                (void)Speed_PID_Update(MOTOR_B, g_line_pd.right_target);
-            }
+            /* 速度环与测速同频（上面那个门控里已经跑过测速） */
+            (void)Speed_PID_Update(MOTOR_A, g_line_pd.left_target);
+            (void)Speed_PID_Update(MOTOR_B, g_line_pd.right_target);
 
             /*
              * 自动停车：外环判定"测试点已到启停线"后，
@@ -376,14 +386,8 @@ static void ControlTask_Main(void *argument)
                     /* 已在目标值，无需调整 */
                 }
 
-                now = xTaskGetTickCount();
-                if ((now - last_speed) >= pdMS_TO_TICKS(SPEED_PID_PERIOD_MS))
-                {
-                    last_speed = now;
-
-                    (void)Speed_PID_Update(MOTOR_A, s_ramped_target);
-                    (void)Speed_PID_Update(MOTOR_B, s_ramped_target);
-                }
+                (void)Speed_PID_Update(MOTOR_A, s_ramped_target);
+                (void)Speed_PID_Update(MOTOR_B, s_ramped_target);
             }
             break;
 

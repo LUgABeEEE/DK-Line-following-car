@@ -67,7 +67,6 @@ TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart2;
 
-PCD_HandleTypeDef hpcd_USB_FS;
 
 /* USER CODE BEGIN PV */
 /* 灰度巡线传感器实例。寄存器 5 的数字状态、8 路模拟值、8 路阈值都在这里面 */
@@ -89,7 +88,6 @@ static void MX_TIM4_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_USB_PCD_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -193,7 +191,6 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM1_Init();
   MX_USART2_UART_Init();
-  MX_USB_PCD_Init();
   /* USER CODE BEGIN 2 */
   Motor_Init();            /* 启动 PWM、拉高 STBY，并把电机停稳 */
   Encoder_Init();          /* 启动 TIM3 / TIM4 编码器计数 */
@@ -728,37 +725,6 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
-  * @brief USB Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USB_PCD_Init(void)
-{
-
-  /* USER CODE BEGIN USB_Init 0 */
-
-  /* USER CODE END USB_Init 0 */
-
-  /* USER CODE BEGIN USB_Init 1 */
-
-  /* USER CODE END USB_Init 1 */
-  hpcd_USB_FS.Instance = USB;
-  hpcd_USB_FS.Init.dev_endpoints = 8;
-  hpcd_USB_FS.Init.speed = PCD_SPEED_FULL;
-  hpcd_USB_FS.Init.low_power_enable = DISABLE;
-  hpcd_USB_FS.Init.lpm_enable = DISABLE;
-  hpcd_USB_FS.Init.battery_charging_enable = DISABLE;
-  if (HAL_PCD_Init(&hpcd_USB_FS) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USB_Init 2 */
-
-  /* USER CODE END USB_Init 2 */
-
-}
-
-/**
   * Enable DMA controller clock
   */
 static void MX_DMA_Init(void)
@@ -795,8 +761,15 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, BLE_STATE_Pin|M_STBY_Pin, GPIO_PIN_RESET);
+  /*
+   * 注意：BLE_STATE(PA1) 是【输入】—— 模块输出连接状态给 MCU 读。
+   * 以前被配成推挽输出并拉低，导致：
+   *   1) HAL_GPIO_ReadPin 读到的是自己的输出锁存器，恒为 0
+   *      -> BLE_IsConnected() 永远返回"未连接"
+   *   2) MCU 输出低电平与模块输出对顶，长时间可能损伤引脚
+   * 这里只驱动真正需要输出的 M_STBY。
+   */
+  HAL_GPIO_WritePin(GPIOA, M_STBY_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, BUZZ_Pin|M_AIN2_Pin|M_AIN1_Pin|M_BIN1_Pin
@@ -805,11 +778,22 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, LED2_Pin|LED1_Pin, GPIO_PIN_SET);
 
-  /*Configure GPIO pins : BLE_STATE_Pin M_STBY_Pin */
-  GPIO_InitStruct.Pin = BLE_STATE_Pin|M_STBY_Pin;
+  /*Configure GPIO pin : M_STBY_Pin */
+  GPIO_InitStruct.Pin = M_STBY_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*
+   * BLE_STATE 用【下拉】：
+   *   模块未接/未连接 -> 引脚被下拉为低 -> BLE_IsConnected() = 0（正确）
+   *   模块连接后自己输出高 -> 读到高 -> = 1
+   * 若用上拉，模块没插时会一直误报"已连接"。
+   */
+  GPIO_InitStruct.Pin = BLE_STATE_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : KEY2_Pin KEY3_Pin */

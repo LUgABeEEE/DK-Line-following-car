@@ -19,6 +19,7 @@
 //
 
 #include "LinePD.h"
+#include "Ble_task.h"   /* BleTask_SendEvent()：控制环日志走队列，不抢串口 */
 #include "Encoder.h"        /* 自动停车要用累计里程 */
 #include "MPU6050.h"        /* 陀螺航向 / yaw 阻尼 */
 #include <math.h>
@@ -634,8 +635,6 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
          * 角点事件内不触发：锐角弯的弯心同样会全亮，
          * 那时需要的是"继续转"，不是"停"。
          */
-        const char *msg = "[LinePD] all-black, stop\r\n";
-
         Speed_PID_StopAll();
         pd->left_target  = 0.0f;
         pd->right_target = 0.0f;
@@ -645,7 +644,9 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         pd->search_ms    = 0U;
         pd->search_dir   = 0;
 
-        HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)strlen(msg), 20U);
+        /* 走事件队列：控制环里不做任何串口操作 */
+        (void)BleTask_SendEvent(BLE_EVT_PD_CORNER, 9, 0);
+
         return LINE_PD_ERR_LOST;
     }
 #endif
@@ -1675,11 +1676,16 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
              */
             if (pd->lost_announced == 0U)
             {
-                const char *msg = "[PD] lost\r\n";
-
+                /*
+                 * 走蓝牙任务的事件队列，不直接抢 USART2。
+                 * 原来在这里同步发 11 字节（约 12ms，超时 40ms），
+                 * 会和 [L] 行、[G] 行抢总线，实测大量丢行；
+                 * 而且控制任务优先级最高，阻塞在串口上还会拖住 5ms 节拍。
+                 */
                 pd->lost_announced = 1U;
-                (void)HAL_UART_Transmit(&huart2, (uint8_t *)msg,
-                                        (uint16_t)strlen(msg), 40U);
+                (void)BleTask_SendEvent(BLE_EVT_PD_LOST,
+                                        (int16_t)LinePD_RaceTraveled(pd),
+                                        0);
             }
 
             Speed_PID_StopAll();
@@ -1722,17 +1728,10 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
          */
         if (pd->search_ms > 0U)
         {
-            char msg[40];
-            int  len = snprintf(msg, sizeof(msg),
-                                "[PD] ok %ums y%+d\r\n",
-                                (unsigned int)pd->search_ms,
-                                (int)pd->last_commit_turn);
-
-            if (len > 0)
-            {
-                (void)HAL_UART_Transmit(&huart2, (uint8_t *)msg,
-                                        (uint16_t)len, 40U);
-            }
+            /* 同上：改走事件队列，控制环不再直接发串口 */
+            (void)BleTask_SendEvent(BLE_EVT_PD_RECOVER,
+                                    (int16_t)pd->search_ms,
+                                    (int16_t)pd->last_commit_turn);
         }
 
         pd->search_ms   = 0U;
@@ -1819,7 +1818,15 @@ void LinePD_VerifySigns(Line_PD_t *pd, Gray_Sensor_t *gray,
 
         HAL_Delay(LINE_PD_PERIOD_MS);
 
-        /* 这是独立的自检函数，自己读传感器，与 20ms 采样节拍无关 */
+        /*
+         * ⚠️ DMA 化之后 Gray_Update() 只【消费】已完成的帧，自己不再读总线。
+         *    自检函数如果只调 Gray_Update，永远拿不到新帧，只会一路打印
+         *    "I2C FAIL"。这里先发起一次 DMA 采样，等传输完成（最长 20ms），
+         *    再消费。
+         */
+        Gray_StartSample(hi2c);
+        HAL_Delay(20U);
+
         gray_result = Gray_Update(gray, hi2c);
 
         if ((gray_result == 1U) || (gray_result == 2U))

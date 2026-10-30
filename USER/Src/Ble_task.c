@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "cw"
+#define BLE_BUILD_TAG   "cx"
 
 /*
  * UART 发送超时，单位 ms。
@@ -77,6 +77,18 @@ extern size_t xPortGetFreeHeapSize(void);
  */
 #define BLE_TAG_QUEUE_LEN       8U
 static QueueHandle_t s_tag_queue = NULL;
+
+/* 控制事件队列：控制任务入队，本任务格式化输出（避免抢 USART2） */
+typedef struct
+{
+    uint8_t code;
+    int16_t a;
+    int16_t b;
+} BleEvent_t;
+
+#define BLE_EVT_QUEUE_LEN   8U
+
+static QueueHandle_t s_evt_queue = NULL;
 static uint16_t      s_tag_seq   = 0U;
 
 /* 串口句柄定义在 main.c 中 */
@@ -836,14 +848,43 @@ static void BleTask_Main(void *argument)
         {
             uint8_t tag;
 
+            /*
+             * 控制事件（丢线/找回/角点）：控制任务只入队，
+             * 这里统一格式化，避免控制环直接 HAL_UART_Transmit 抢总线。
+             */
+            {
+                BleEvent_t evt;
+
+                while (xQueueReceive(s_evt_queue, &evt, 0U) == pdTRUE)
+                {
+                    if (evt.code == BLE_EVT_PD_LOST)
+                    {
+                        BleTask_Print("[PD] lost d%d\r\n", (int)evt.a);
+                    }
+                    else if (evt.code == BLE_EVT_PD_RECOVER)
+                    {
+                        BleTask_Print("[PD] ok %ums y%+d\r\n",
+                                      (unsigned int)evt.a, (int)evt.b);
+                    }
+                    else if (evt.code == BLE_EVT_PD_CORNER)
+                    {
+                        BleTask_Print("[PD] corner t%d d%+d\r\n",
+                                      (int)evt.a, (int)evt.b);
+                    }
+                    else
+                    {
+                        /* 未知码忽略 */
+                    }
+                }
+            }
+
             while (xQueueReceive(s_tag_queue, &tag, 0U) == pdTRUE)
             {
                 if (tag == 2U)
                 {
                     /* 自动停车：识别到启停线（控制任务只入队，不阻塞串口） */
-                    BleTask_Print("[RACE] det d%u lrn%u t%lu\r\n",
+                    BleTask_Print("[RACE] det d%u t%lu\r\n",
                                   (unsigned int)(g_line_pd.race_detect_cm - g_line_pd.race_start_cm),
-                                  (unsigned int)LinePD_RaceLearnedLapCm(),
                                   (unsigned long)HAL_GetTick());
                 }
                 else if (tag == 3U)
@@ -938,14 +979,13 @@ static void BleTask_Main(void *argument)
             {
                 s_diag_tick = HAL_GetTick();
 
-                BleTask_Print("[M] heap%u stkC%u stkO%u stkB%u i2c%u/%u lrn%u mod=%s cfg%u baud%lu\r\n",
+                BleTask_Print("[M] heap%u stkC%u stkO%u stkB%u i2c%u/%u mod=%s cfg%u baud%lu\r\n",
                               (unsigned int)xPortGetFreeHeapSize(),
                               (unsigned int)(ControlTask_GetStackFreeWords() * 4U),
                               (unsigned int)(OledTask_GetStackFreeWords() * 4U),
                               (unsigned int)(BleTask_GetStackFreeWords() * 4U),
                               (unsigned int)g_gray.total_fails,
                               (unsigned int)g_gray.total_reads,
-                              (unsigned int)LinePD_RaceLearnedLapCm(),
                               BLE_ModuleName(),
                               (unsigned int)BLE_GetCfgResult(),
                               (unsigned long)BLE_GetBaudrate());
@@ -1006,6 +1046,11 @@ uint8_t BleTask_Init(void)
     }
 
     /* 跑圈结果标记队列（必须在任务启动前建好） */
+    if (s_evt_queue == NULL)
+    {
+        s_evt_queue = xQueueCreate(BLE_EVT_QUEUE_LEN, sizeof(BleEvent_t));
+    }
+
     if (s_tag_queue == NULL)
     {
         s_tag_queue = xQueueCreate(BLE_TAG_QUEUE_LEN, sizeof(uint8_t));
@@ -1062,6 +1107,22 @@ uint8_t BleTask_SendTag(uint8_t ok)
     }
 
     return (xQueueSend(s_tag_queue, &item, 0U) == pdTRUE) ? 1U : 0U;
+}
+
+uint8_t BleTask_SendEvent(uint8_t code, int16_t a, int16_t b)
+{
+    BleEvent_t evt;
+
+    if (s_evt_queue == NULL)
+    {
+        return 0U;
+    }
+
+    evt.code = code;
+    evt.a    = a;
+    evt.b    = b;
+
+    return (xQueueSend(s_evt_queue, &evt, 0U) == pdTRUE) ? 1U : 0U;
 }
 
 uint16_t BleTask_GetTagCount(void)

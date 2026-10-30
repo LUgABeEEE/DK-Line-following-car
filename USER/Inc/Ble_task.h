@@ -103,6 +103,20 @@ uint32_t BleTask_GetStackFreeWords(void);
  */
 uint8_t BleTask_SendTag(uint8_t ok);
 
+/*
+ * 事件码：控制任务把要打印的内容压成 (码, 值1, 值2) 入队，
+ * 由蓝牙任务统一格式化输出，避免控制环直接抢 USART2。
+ */
+#define BLE_EVT_PD_LOST     1U   /* a=丢线里程(cm)                     */
+#define BLE_EVT_PD_RECOVER  2U   /* a=搜索耗时(ms)  b=转角(度)         */
+#define BLE_EVT_PD_CORNER   3U   /* a=角点类型      b=方向             */
+
+/*
+ * 把一条控制事件入队（非阻塞，队列满直接丢弃）。
+ * 控制任务专用：不要在这里做任何格式化或串口操作。
+ */
+uint8_t BleTask_SendEvent(uint8_t code, int16_t a, int16_t b);
+
 /* 已发送的标记个数（从上次上电算起） */
 uint16_t BleTask_GetTagCount(void);
 
