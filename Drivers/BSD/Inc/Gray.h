@@ -493,6 +493,18 @@ void Gray_Init(Gray_Sensor_t *sensor);
 void Gray_StartSample(I2C_HandleTypeDef *hi2c);
 
 /*
+ * 清掉控制环用的位置滑动平均历史。
+ *
+ * 必须在每次【进入循迹模式】时调用：
+ * 那 4 个历史值是在 Gray_Init（上电一次）里清零的，之后一直带着上一圈
+ * 的残留。如果上次停车时线偏在阵列边上（比如 3cm），新一圈的前 4 拍
+ * （20ms）会拿这个旧值做平均，PD 一上来就看到一个假的大误差，
+ * 微分项直接打出一个大差速 —— 表现就是"有时候一开始就震荡得很厉害，
+ * 有时候又很平直"（取决于上次停在哪）。
+ */
+void Gray_ResetHistory(Gray_Sensor_t *sensor);
+
+/*
  * I2C 出错通知：由 main.c 的 HAL_I2C_ErrorCallback 在 I2C1 出错时调用，
  * 只清内部 busy 标志（内部不调用任何 FreeRTOS API）。
  */

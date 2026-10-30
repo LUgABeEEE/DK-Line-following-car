@@ -173,6 +173,13 @@ static void ControlTask_Main(void *argument)
                  */
                 LinePD_Reset(&g_line_pd);
 
+                /*
+                 * 灰度侧的位置滑动平均历史也要清。
+                 * 否则新一圈的前 20ms 会拿上一圈的旧位置做平均，
+                 * PD 一上来就看到假误差 —— 这是"有时候一开始就震荡"的原因。
+                 */
+                Gray_ResetHistory(&g_gray);
+
                 /* 启动比赛自动停车（g_race_lap_cm=0 时等于关闭） */
                 /*
                  * 启动比赛自动停车。

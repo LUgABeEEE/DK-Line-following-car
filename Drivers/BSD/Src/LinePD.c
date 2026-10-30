@@ -152,6 +152,7 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->speed          = 0.0f;
     pd->straight_ticks = 0U;
     pd->speed_boost    = 0.0f;
+    pd->steer_out      = 0.0f;   /* 转向斜坡限幅的上一拍值，不清会带上一圈的残留 */
     pd->pos_filter     = 0.0f;
     pd->theta_rad      = 0.0f;
     pd->last_pos_f     = 0.0f;

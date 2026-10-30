@@ -121,6 +121,24 @@ void Gray_NotifyI2cError(void)
  * 发起一次异步采样。上一次还没完成就直接跳过（不排队、不等待）。
  * 带看门狗：busy 超过 20ms 说明总线卡死，复位 I2C 外设。
  */
+void Gray_ResetHistory(Gray_Sensor_t *sensor)
+{
+    uint32_t k;
+
+    if (sensor == NULL)
+    {
+        return;
+    }
+
+    sensor->pos_hist_idx     = 0U;
+    sensor->position_cm_ctrl = sensor->position_cm;
+
+    for (k = 0U; k < 4U; k++)
+    {
+        sensor->pos_hist_ctrl[k] = sensor->position_cm;
+    }
+}
+
 void Gray_StartSample(I2C_HandleTypeDef *hi2c)
 {
     if (hi2c == NULL)
