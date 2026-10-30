@@ -152,6 +152,7 @@ void LinePD_Reset(Line_PD_t *pd)
     pd->speed          = 0.0f;
     pd->straight_ticks = 0U;
     pd->speed_boost    = 0.0f;
+    pd->run_ticks      = 0U;
     pd->steer_out      = 0.0f;   /* 转向斜坡限幅的上一拍值，不清会带上一圈的残留 */
     pd->pos_filter     = 0.0f;
     pd->theta_rad      = 0.0f;
@@ -1414,6 +1415,12 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
 
         slow_factor *= (1.0f + pd->speed_boost);
 
+        /* 起步计时（软限速用），饱和后不再增加 */
+        if (pd->run_ticks < 0xFFFFU)
+        {
+            pd->run_ticks++;
+        }
+
         /*
          * 丢线降速：进入搜索前（lost_count 1~容差）先减速，
          * 给车时间冲过断口/遮挡，也避免高速丢线直接甩出去。
@@ -1435,6 +1442,22 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
             float dt_sec  = (float)LINE_PD_PERIOD_MS / 1000.0f;
             float step_up = LINE_SPEED_RAMP_CMS_PER_SEC * dt_sec;
             float step_dn = step_up * LINE_DOWN_RAMP_MULT;
+
+            /*
+             * 起步软限速：前 LINE_START_SOFT_MS 内压住速度，
+             * 让"斜着放车"也有机会收敛（详见 LinePD.h 的说明）。
+             * 误差已经收敛（|e| 很小）就提前解除，不影响正常起跑。
+             */
+            if (pd->run_ticks < (uint16_t)(LINE_START_SOFT_MS / LINE_PD_PERIOD_MS))
+            {
+                float e_now = (error < 0.0f) ? -error : error;
+
+                if ((e_now >= LINE_START_SOFT_ERR_CM) &&
+                    (target_speed > LINE_START_SOFT_CMS))
+                {
+                    target_speed = LINE_START_SOFT_CMS;
+                }
+            }
 
             /* 自动停车接近段：限速，17cm 内要停得准 */
             if ((pd->race_phase == 2U) && (target_speed > LINE_RACE_APPROACH_CMS))

@@ -665,6 +665,22 @@
 #define LINE_SPEED_RAMP_CMS_PER_SEC  90.0f
 
 /*
+ * 起步软限速。
+ *
+ * 为什么需要：车斜着放时，PD 只看到"横向偏移"，看不到"车与线的夹角"。
+ * 起步瞬间偏移还很小、但夹角已经存在，P 项给不出足够的修正；
+ * 等偏移长大了 P 项又猛打，必然过冲 -> 震荡。
+ * 这段过程里唯一的帮手是微分项，而它此时还没有历史。
+ *
+ * 做法：进入循迹后的前 LINE_START_SOFT_MS 毫秒，把目标速度压在
+ * LINE_START_SOFT_CMS 以下，让环路增益小一点、给收敛留时间。
+ * 时间到或误差已经收敛（|e| 小且稳定）就提前解除。
+ */
+#define LINE_START_SOFT_MS           700U
+#define LINE_START_SOFT_CMS          35.0f
+#define LINE_START_SOFT_ERR_CM       0.8f   /* |e| 小于这个就算已收敛，提前解除 */
+
+/*
  * 微分低通滤波系数 (0,1]。灰度解算出的位置在探头交界处有固有台阶，
  * 不滤波的话 D 项会把台阶当成分辨率极高的真实变化而放大。
  * 但系数太小会让 D 项严重滞后、失去阻尼作用（外环 100ms 周期下尤其明显），
@@ -1164,6 +1180,7 @@ typedef struct
     float d_filter;         /* 微分低通系数 (0,1]                             */
     float alat_max;         /* 曲率限速用：允许的最大侧向加速度 cm/s²         */
     uint8_t race_zone;      /* 1 = 已进入终点接近区（限速 + 武装）             */
+    uint16_t run_ticks;     /* 本次循迹已跑的拍数（20ms/拍），起步软限速用      */
     uint16_t race_seen;     /* 脉冲被 LinePD 看到的次数（诊断用）              */
     uint16_t race_reject;   /* 看到但被关卡拒掉的次数（诊断用）                */
 
