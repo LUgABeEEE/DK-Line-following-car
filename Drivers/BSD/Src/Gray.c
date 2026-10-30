@@ -414,32 +414,14 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
         }
     }
 
-    /* ---------- 4b. 启停线短脉冲检测 ---------- */
     /*
-     * 5cm 横线：8 路同时黑 1~3 拍；角点/宽黑带持续更久。
-     * 结果锁存在 stop_bar_seen，由 LinePD 消费（外环 40ms 可能整拍漏掉）。
+     * ---------- 4b 已移到函数末尾 ----------
+     * 启停线脉冲检测必须【在位置算完之后】做：它要把"脉冲发生那一拍"的
+     * 横向位置一起锁存下来，供 LinePD 做"误差是否够小"的判据。
+     * 以前放在这里（位置还没算），LinePD 只能用"消费时"的位置 ——
+     * 而消费发生在脉冲结束后的下一拍，车已经往前走了，误差早就变了，
+     * 于是真正的启停线经常被判成"误差太大"而丢掉。
      */
-    if (Gray_IsStopBarPattern(sensor) != 0U)
-    {
-        if (sensor->stop_pulse < 0xFFU)
-        {
-            sensor->stop_pulse++;
-        }
-    }
-    else if (sensor->stop_pulse > 0U)
-    {
-        if (sensor->stop_pulse <= GRAY_STOP_BAR_PULSE_MAX)
-        {
-            sensor->stop_bar_seen  = 1U;
-            sensor->stop_bar_len   = sensor->stop_pulse;
-            sensor->stop_bar_state = sensor->state_byte;
-        }
-        sensor->stop_pulse = 0U;
-    }
-    else
-    {
-        /* 保持 */
-    }
 
     /* ---------- 5. 逐通道求权重，累加求加权质心 ---------- */
     /*
@@ -914,6 +896,40 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
     }
 
     sensor->position_cm = sensor->position_mm * 0.1f;
+
+    /* ---------- 4b. 启停线短脉冲检测（位置算完之后再做） ---------- */
+    /*
+     * 5cm 横线压在阵列中间时是"中间连续黑 + 两边各留白"，
+     * 角点/宽黑带两边会到边，被 Gray_IsStopBarPattern 排除。
+     *
+     * 脉冲期间每一拍都把【当时的位置和通道状态】锁存下来，
+     * 脉冲结束时置 stop_bar_seen，由 LinePD 消费。
+     * 这样 LinePD 拿到的位置是"压线那一刻"的，不是"消费那一刻"的。
+     */
+    if (Gray_IsStopBarPattern(sensor) != 0U)
+    {
+        if (sensor->stop_pulse < 0xFFU)
+        {
+            sensor->stop_pulse++;
+        }
+
+        /* 锁存"压线当时"的位置/状态（取脉冲内最后一拍） */
+        sensor->stop_bar_pos_mm = sensor->position_mm;
+        sensor->stop_bar_state  = sensor->state_byte;
+    }
+    else if (sensor->stop_pulse > 0U)
+    {
+        if (sensor->stop_pulse <= GRAY_STOP_BAR_PULSE_MAX)
+        {
+            sensor->stop_bar_seen = 1U;
+            sensor->stop_bar_len  = sensor->stop_pulse;
+        }
+        sensor->stop_pulse = 0U;
+    }
+    else
+    {
+        /* 保持 */
+    }
 
     return 0U;
 }

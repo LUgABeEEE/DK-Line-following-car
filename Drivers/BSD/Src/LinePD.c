@@ -397,13 +397,20 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                  *    这条门槛当初是因为判据只有"6 路全黑"、没有空间区分能力；
                  *    现在 ① 的三判据已经足够，所以去掉。
                  */
-                if ((gray->position_cm > -LINE_RACE_DETECT_ERR_CM) &&
-                    (gray->position_cm <  LINE_RACE_DETECT_ERR_CM) &&
+                /*
+                 * 误差判据用 stop_bar_pos_mm（压线那一刻锁存的位置），
+                 * 不是 position_cm（消费这一刻的位置）。
+                 * 消费发生在脉冲结束后的下一拍，车已经往前走了，
+                 * 用"现在"的位置会把真正的启停线误判成"误差太大"。
+                 */
+                if ((gray->stop_bar_pos_mm * 0.1f > -LINE_RACE_DETECT_ERR_CM) &&
+                    (gray->stop_bar_pos_mm * 0.1f <  LINE_RACE_DETECT_ERR_CM) &&
                     ((pd->race_lap_cm > 0.0f) ||
                      (traveled >= LINE_RACE_DETECT_MIN_CM)))
                 {
                     pd->race_phase     = 2U;
                     pd->race_detect_cm = traveled;
+                    pd->race_pulse     = 0U;   /* 接近段计时从这里开始 */
 
 #if (LINE_RACE_LEARN_LAP != 0)
                     /* 学习周长：识别点 + 17cm（只做自适应模式） */
@@ -454,9 +461,23 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         {
             float approach = traveled - pd->race_detect_cm;
 
+            pd->race_pulse++;   /* 借用 race_pulse 当"接近段计时"（20ms/拍） */
+
             if (approach >= (LINE_RACE_STOP_OFFSET_CM - LINE_RACE_BRAKE_MARGIN_CM))
             {
                 pd->race_phase = 3U;
+            }
+            else if (pd->race_pulse >= LINE_RACE_APPROACH_TIMEOUT_CYCLES)
+            {
+                /*
+                 * 兜底：接近段走了太久还没到距离（打滑/编码器异常/卡住），
+                 * 直接判到位停车，避免"识别到了却永远不停"。
+                 */
+                pd->race_phase = 3U;
+            }
+            else
+            {
+                /* 继续接近 */
             }
         }
         else

@@ -316,6 +316,7 @@ typedef struct
     uint8_t  stop_bar_seen;     /* 1 = 刚出现一次短全黑脉冲（启停线候选，待消费）  */
     uint8_t  stop_bar_len;      /* 这次脉冲持续了几拍（采样周期/拍）               */
     uint8_t  stop_bar_state;    /* 触发那次脉冲时的通道状态字节（调试用）          */
+    float    stop_bar_pos_mm;   /* 脉冲发生【当时】的位置（不是消费时的那一刻）    */
 
     /*
      * ---- 场景分类（弯道识别）----
