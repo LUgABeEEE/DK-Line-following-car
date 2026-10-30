@@ -214,24 +214,23 @@ static void ControlTask_Main(void *argument)
         }
 
         /*
-         * ---- 节拍 1b：灰度采样，10ms ----
+         * ---- 节拍 1b：灰度采样，5ms ----
          *
-         * 为什么独立成 10ms：
+         * 为什么是 5ms：
          *   启停线识别靠"中间连续黑 + 两边留白"的短脉冲，脉冲窗口在
          *   55cm/s 时只有 15.5mm ≈ 28ms，20ms 采样只能抓到 1~2 拍，
-         *   偶尔整拍漏掉。10ms 能把样本数翻倍，漏检率明显下降。
+         *   偶尔整拍漏掉。5ms 能抓 5~7 拍，漏检率大幅下降。
          *
          * 为什么不影响控制律：
          *   LinePD 仍然在下面节拍 2 按 LINE_PD_PERIOD_MS(20ms) 跑，
-         *   这里只是把"采样"加快，PD 用的是最新一帧。
+         *   速度环门控在 20ms，这里只是把"采样"加快。
          *
-         * 为什么现在敢加到 10ms：
-         *   Gray 的寄存器读已经改成 DMA + 信号量，传输的 1.2ms 里任务挂起、
-         *   CPU 让给别的任务，不像阻塞版那样占满 12% CPU。
+         * 为什么 CPU 不受影响：
+         *   采样走 DMA 异步双缓冲（Gray_StartSample 发起后立刻返回，
+         *   完成时由中断翻缓冲、置就绪标志，中断里不调用任何 FreeRTOS API）。
          *
-         * 只在循迹模式读（其它模式不关心），减少无谓的总线占用。
-         * 失败不特殊处理：Gray 内部会累计 fail_count，
-         * LinePD_Update 开头会检查它。
+         * 所有模式都发起采样（SPD/STOP 模式下 OLED 调试页也要看灰度），
+         * 但只有循迹模式才消费（Gray_Update）。
          */
         now = xTaskGetTickCount();
         if ((now - last_gray) >= pdMS_TO_TICKS(GRAY_SAMPLE_PERIOD_MS))
@@ -245,10 +244,16 @@ static void ControlTask_Main(void *argument)
              */
             Gray_StartSample(&hi2c1);
 
-            if (g_ctrl_mode == CTRL_MODE_LINE_FOLLOW)
-            {
-                (void)Gray_Update(&g_gray, &hi2c1);
-            }
+            /*
+             * 所有模式都消费一帧。
+             *
+             * 改成 DMA 异步后 Gray_Update() 里已经没有 I2C 事务了
+             * （只是解析一块缓冲），所以非循迹模式也调用它【不再有总线代价】。
+             * 之前 cg 版把它从非循迹分支里删掉，导致 SPD/STOP 模式下
+             * OLED 传感器页和 [G] 调试输出全是 0（e=0/0），
+             * 没法单独验证传感器 —— 这里恢复。
+             */
+            (void)Gray_Update(&g_gray, &hi2c1);
         }
 
         switch (g_ctrl_mode)
