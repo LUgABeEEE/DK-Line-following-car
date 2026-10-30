@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "cn"
+#define BLE_BUILD_TAG   "co"
 
 /*
  * UART 发送超时，单位 ms。
@@ -483,6 +483,15 @@ static void BleTask_DumpPid(uint8_t dump_speed)
      */
     char b5[14];
     char b6[14];   /* 停车调试：识别里程 / 已跑里程 各自独立，避免和 b5 抢 */
+    /*
+     * b7：压线位置 bp 专用。
+     *
+     * ⚠️ 这里踩过同一个坑两次：snprintf 的参数求值顺序是不确定的，
+     *    两个字段共用一个格式化缓冲，打印出来就会互相覆盖。
+     *    rd 和 bp 曾共用 b5，导致日志里 rd 恒等于 bp（都是 1.2），
+     *    看起来像"识别里程永远在 1.2cm"，排查时白绕了一大圈。
+     */
+    char b7[14];
 
     /*
      * ---- 外环 ----
@@ -570,7 +579,7 @@ static void BleTask_DumpPid(uint8_t dump_speed)
                            (int)g_line_pd.race_zone,
                            (unsigned)g_gray.stop_bar_state,
                            (int)g_gray.stop_bar_count,
-                           BleTask_Fmt1(b5, sizeof(b5),
+                           BleTask_Fmt1(b7, sizeof(b7),
                                         g_gray.stop_bar_pos_mm * 0.1f));
         }
     }

@@ -403,7 +403,28 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                  * 消费发生在脉冲结束后的下一拍，车已经往前走了，
                  * 用"现在"的位置会把真正的启停线误判成"误差太大"。
                  */
-                if ((gray->stop_bar_pos_mm * 0.1f > -LINE_RACE_DETECT_ERR_CM) &&
+                uint8_t yaw_ok = 1U;
+
+                /*
+                 * 直道闸门：启停线在直道中间，过线时车基本不转。
+                 * 弯道里线斜着扫过阵列，中间 4~5 路会同时黑，
+                 * 三判据挡不住 —— 实测弯道误检 |ω| 都在 26~90°/s，
+                 * 而真线只有 4~24°/s，用陀螺把它们分开。
+                 * 陀螺没就绪时不做这个判断（保持原有判据）。
+                 */
+                if (MPU6050_IsReady() != 0U)
+                {
+                    float w_now = MPU6050_GetYawRateDps();
+
+                    if ((w_now > LINE_RACE_DETECT_MAX_DPS) ||
+                        (w_now < -LINE_RACE_DETECT_MAX_DPS))
+                    {
+                        yaw_ok = 0U;
+                    }
+                }
+
+                if ((yaw_ok != 0U) &&
+                    (gray->stop_bar_pos_mm * 0.1f > -LINE_RACE_DETECT_ERR_CM) &&
                     (gray->stop_bar_pos_mm * 0.1f <  LINE_RACE_DETECT_ERR_CM) &&
                     ((pd->race_lap_cm > 0.0f) ||
                      (traveled >= LINE_RACE_DETECT_MIN_CM)))
