@@ -127,6 +127,7 @@ void LinePD_Init(Line_PD_t *pd)
     pd->speed_limit = LINE_SPEED_LIMIT;
     pd->d_filter    = LINE_PD_DFLT_D_FILTER;
     pd->alat_max    = LINE_ALAT_MAX_DFLT;
+    pd->yaw_ff      = LINE_YAW_FF_GAIN;
     pd->wide_steer  = 0U;
     pd->steer_gain  = 1.0f;
     pd->steer_out   = 0.0f;
@@ -979,17 +980,37 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
         steer += pd->theta_ff;
 
         /*
-         * A) yaw 阻尼：车身正在转（ω_yaw）就反向给差速，
-         *    把"过弯后半段/出弯"的摆动压下去。
+         * A) 横摆角速度处理：运动学前馈 + 小阻尼
+         *
+         *    ① 运动学前馈（方案 C）：
+         *       差速驱动有精确关系 ω = (vR−vL)/W、steer = (vR−vL)/2，
+         *       所以维持当前转弯所需的差速就是 steer = ω × W / 2。
+         *       弯道里 64~73% 的转向量都是这一份，以前全靠 PD 的误差去换，
+         *       于是必然存在稳态误差 e = ω×W/2/kp_eff（实测中弯 1.2cm）。
+         *       把这份已知的量直接前馈出去，误差按 (1−K_ff) 比例下降。
+         *
+         *       注意：前馈不进入反馈回路，不改变闭环极点，
+         *       所以调 K_ff 不会像调 Kp 那样引起振荡。
+         *
+         *    ② 小阻尼：只用来抑制陀螺噪声引起的高频抖动，保留很小。
+         *
          *    只在正常循迹时生效，直角事件/assist 内不加，免得转向发肉。
          */
         if ((assist == 0U) && (pd->all_assist == 0U) &&
             (pd->corner_active == 0U) && (MPU6050_IsReady() != 0U))
         {
-            float damp = LINE_YAW_DAMP_GAIN * MPU6050_GetYawRateDps();
+            float w_dps = MPU6050_GetYawRateDps();
+            float omega = w_dps * 0.0174533f;              /* °/s -> rad/s */
+            float ff_kin;
 
-            damp = LinePD_Clamp(damp, LINE_YAW_DAMP_MAX_CMS);
-            steer -= damp;
+            /* ① 运动学前馈：维持当前横摆角速度所需的差速 */
+            ff_kin = pd->yaw_ff * omega * LINE_TRACK_WIDTH_CM * 0.5f;
+            ff_kin = LinePD_Clamp(ff_kin, LINE_YAW_FF_MAX_CMS);
+            steer += ff_kin;
+
+            /* ② 残余阻尼：压陀螺噪声，量很小 */
+            steer -= LinePD_Clamp(LINE_YAW_DAMP_GAIN * w_dps,
+                                  LINE_YAW_DAMP_MAX_CMS);
         }
     }
     {

@@ -79,7 +79,8 @@ typedef struct
 #define TUNE_IDX_LBAS       10U
 #define TUNE_IDX_LAP        11U     /* 比赛自动停车：一圈周长 cm */
 #define TUNE_IDX_ALAT       12U     /* 曲率限速：允许最大侧向加速度 */
-#define TUNE_PARAM_COUNT    13U
+#define TUNE_IDX_YFF        13U     /* 运动学前馈系数 K_ff */
+#define TUNE_PARAM_COUNT    14U
 
 static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
 {
@@ -157,6 +158,16 @@ static const TuneParam_t s_params[TUNE_PARAM_COUNT] =
      * 调大 = 弧线更快（可能甩出）；调小 = 更保守。
      */
     { "ALAT",   5.00f,  30.00f,  200.00f },
+    /*
+     * YFF: 运动学前馈系数 K_ff（步长 0.05，范围 0~1.0）。
+     *   0.0 = 关闭（回到纯 PD，弯道稳态误差 ~1.5cm）
+     *   0.5 = 推荐起点（误差约减半）
+     *   1.0 = 完全按运动学（理论误差 0，可能过冲）
+     * 依据：差速驱动 steer = ω × 轮距 / 2，这一份差速是"维持转弯"
+     *       必需的、可精确计算的量，不该让 PD 用误差去换。
+     * 前馈不进入反馈回路，调这个参数不会引起振荡。
+     */
+    { "YFF",    0.05f,   0.00f,   1.00f },
 };
 
 /* ------------------------------------------------------------------------- */
@@ -257,6 +268,10 @@ static float OledTask_ReadParam(uint8_t idx)
     {
         return g_line_pd.alat_max;
     }
+    if (idx == TUNE_IDX_YFF)
+    {
+        return g_line_pd.yaw_ff;
+    }
 
     /* 左右轮参数始终同步，读 A 的就行 */
     return Speed_PID_GetGain(MOTOR_A, idx);
@@ -347,6 +362,13 @@ static void OledTask_WriteParam(uint8_t idx, float value)
     {
         /* 曲率限速的侧向加速度上限，实时生效，不用重烧 */
         g_line_pd.alat_max = value;
+        return;
+    }
+
+    if (idx == TUNE_IDX_YFF)
+    {
+        /* 运动学前馈系数，实时生效，不用重烧 */
+        g_line_pd.yaw_ff = value;
         return;
     }
 
