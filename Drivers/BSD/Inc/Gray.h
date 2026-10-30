@@ -333,6 +333,16 @@ typedef struct
     /* ---- 解算结果 ---- */
     float    position_mm;       /* 线相对传感器中心的位置，单位 mm，左正右负    */
     float    position_cm;       /* 同上，单位 cm                                */
+    /*
+     * 控制环专用位置：4 拍 @5ms 滑动平均（≈20ms 平均）。
+     * 采样提到 5ms 是为了抓启停线短脉冲；但 LinePD 仍 20ms 跑一次，
+     * 直接拿单点位置会让微分项噪声带宽变成 4 倍 —— 实测表现为转向
+     * 在 ±30 之间来回打、车抖，进而偏航角速度飙到 300°/s 以上。
+     * 这里把控制环看到的位置噪声恢复到"采样 20ms 时"的水平。
+     */
+    float    position_cm_ctrl;
+    float    pos_hist_ctrl[4];  /* 上述平均用的历史                              */
+    uint8_t  pos_hist_idx;      /* 历史写指针                                    */
     float    strength;          /* 各通道归一化量之和，用于判断是否看到线        */
     uint8_t  channel[GRAY_CHANNEL_COUNT];       /* 各通道是否看到线（0/1）       */
     uint8_t  active_count;      /* 看到线的通道数                                */

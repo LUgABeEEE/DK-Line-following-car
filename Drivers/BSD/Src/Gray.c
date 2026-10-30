@@ -216,6 +216,16 @@ void Gray_Init(Gray_Sensor_t *sensor)
     memset(sensor, 0, sizeof(Gray_Sensor_t));
     s_last_position_mm = 0.0f;
 
+    sensor->position_cm_ctrl = 0.0f;
+    sensor->pos_hist_idx     = 0U;
+    {
+        uint32_t k;
+        for (k = 0U; k < 4U; k++)
+        {
+            sensor->pos_hist_ctrl[k] = 0.0f;
+        }
+    }
+
 }
 
 void Gray_SetLinePolarity(uint8_t line_is_bright)
@@ -920,6 +930,22 @@ uint8_t Gray_Update(Gray_Sensor_t *sensor, I2C_HandleTypeDef *hi2c)
     }
 
     sensor->position_cm = sensor->position_mm * 0.1f;
+
+    /* 控制环专用位置：4 拍滑动平均（4 × 5ms = 20ms） */
+    {
+        float sum = 0.0f;
+        uint32_t k;
+
+        sensor->pos_hist_ctrl[sensor->pos_hist_idx] = sensor->position_cm;
+        sensor->pos_hist_idx = (uint8_t)((sensor->pos_hist_idx + 1U) & 0x03U);
+
+        for (k = 0U; k < 4U; k++)
+        {
+            sum += sensor->pos_hist_ctrl[k];
+        }
+
+        sensor->position_cm_ctrl = sum * 0.25f;
+    }
 
     /* ---------- 4b. 启停线短脉冲检测（位置算完之后再做） ---------- */
     /*

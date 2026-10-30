@@ -461,7 +461,7 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
                  * 而真线只有 4~24°/s，用陀螺把它们分开。
                  * 陀螺没就绪时不做这个判断（保持原有判据）。
                  */
-                if (MPU6050_IsReady() != 0U)
+                if ((LINE_RACE_DETECT_MAX_DPS > 0.0f) && (MPU6050_IsReady() != 0U))
                 {
                     float w_now = MPU6050_GetYawRateDps();
 
@@ -703,7 +703,8 @@ uint8_t LinePD_Update(Line_PD_t *pd, Gray_Sensor_t *gray)
          */
         if ((src == 1U) && (is_corner != 0U))
         {
-            float pos = gray->position_cm;
+            /* 用 Gray 里做过 20ms 滑动平均的位置（见 Gray.h 的说明） */
+            float pos = gray->position_cm_ctrl;
 
             if ((pos > -LINE_CORNER_TRIGGER_ERR_CM) &&
                 (pos <  LINE_CORNER_TRIGGER_ERR_CM))
