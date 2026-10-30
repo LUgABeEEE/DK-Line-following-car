@@ -1206,6 +1206,9 @@ uint8_t LinePD_RaceDone(const Line_PD_t *pd);
 float   LinePD_RaceLearnedLapCm(void);
 uint8_t LinePD_RacePhase(const Line_PD_t *pd);
 
+/* 本次比赛已跑里程（cm）= 当前里程 − 起跑里程；停车调试用 */
+float   LinePD_RaceTraveled(const Line_PD_t *pd);
+
 /*
  * 核心接口：读一次灰度传感器，做 PD 运算，并把左右轮目标速度写进内环。
  *

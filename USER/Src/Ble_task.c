@@ -40,7 +40,7 @@
  *
  * 每次行为有变化就改这里的字母。
  */
-#define BLE_BUILD_TAG   "bx"
+#define BLE_BUILD_TAG   "cd"
 
 /*
  * UART 发送超时，单位 ms。
@@ -462,7 +462,8 @@ static const char *BleTask_Fmt1(char *buf, uint16_t size, float value)
  */
 static void BleTask_DumpPid(uint8_t dump_speed)
 {
-    char line[128];
+    /* 行尾多了 rp/rd/ra/sp 四个字段，128 不够，扩到 160 */
+    char line[160];
     char b1[14];
     char b2[14];
     char b3[14];
@@ -474,6 +475,7 @@ static void BleTask_DumpPid(uint8_t dump_speed)
      * 白走了不少弯路。
      */
     char b5[14];
+    char b6[14];   /* 停车调试：识别里程 / 已跑里程 各自独立，避免和 b5 抢 */
 
     /*
      * ---- 外环 ----
@@ -515,6 +517,16 @@ static void BleTask_DumpPid(uint8_t dump_speed)
          *   y±deg : 编码器估算的偏航角（左转为正），用于"定角转弯"标定
          *           看进弯前和重新找到线时的差值，就知道这个弯要转多少度
          *
+         * ---- 停车调试字段（cd 版新增）----
+         *   rp?? : race_phase 当前阶段
+         *          0=等待(未武装) 1=巡航(等启停线) 2=接近(已识别) 3=到位(该停了)
+         *   rd?? : race_detect_cm，识别到启停线时的已跑里程（cm）
+         *          rp 一直是 1 而 rd 不变 => 整圈都没识别到启停线
+         *   ra?? : 本次已跑里程（cm），用来核对"该在多少 cm 停"
+         *          周长模式下停车点应 ≈ LAP − 17 + 2
+         *   sp?? : 启停线脉冲宽度（拍，20ms/拍），0=本拍没有脉冲
+         *          期望 1~3；一直 0 => 全黑通道数不够或阈值不对
+         *
          * sr 和 sc 放在同一行，是用来验证防抖效果的：
          *   锐角弯里 sr 会快速在 3/4/5 之间跳，而 sc 应该稳定，
          *   cs 应该在进弯时变 1、出弯 3 拍后回 0。
@@ -528,7 +540,8 @@ static void BleTask_DumpPid(uint8_t dump_speed)
                                 ? scene_name[g_line_pd.scene_last] : "?";
 
             (void)snprintf(line, sizeof(line),
-                           "[L%s] %s e%s s%s L%s R%s sd%+d sc=%s cd%+d sr=%d cs=%d y%+d\r\n",
+                           "[L%s] %s e%s s%s L%s R%s sd%+d sc=%s cd%+d sr=%d cs=%d y%+d "
+                           "rp%d rd%s ra%s sp%d\r\n",
                            BLE_BUILD_TAG,
                            mode_tag,
                            BleTask_Fmt1(b1, sizeof(b1), g_line_pd.error),
@@ -540,7 +553,12 @@ static void BleTask_DumpPid(uint8_t dump_speed)
                            (int)g_line_pd.corner_dir,
                            (int)g_gray.scene_raw,
                            (int)g_line_pd.corner_active,
-                           (int)g_line_pd.yaw_deg);
+                           (int)g_line_pd.yaw_deg,
+                           (int)g_line_pd.race_phase,
+                           BleTask_Fmt1(b5, sizeof(b5), g_line_pd.race_detect_cm),
+                           BleTask_Fmt1(b6, sizeof(b6),
+                                        LinePD_RaceTraveled(&g_line_pd)),
+                           (int)g_gray.stop_bar_len);
         }
     }
     (void)HAL_UART_Transmit(&huart2, (uint8_t *)line,

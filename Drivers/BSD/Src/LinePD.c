@@ -1903,3 +1903,13 @@ uint8_t LinePD_RacePhase(const Line_PD_t *pd)
 {
     return (pd == NULL) ? 0U : pd->race_phase;
 }
+
+float LinePD_RaceTraveled(const Line_PD_t *pd)
+{
+    if (pd == NULL)
+    {
+        return 0.0f;
+    }
+
+    return LinePD_RaceTravel(pd) - pd->race_start_cm;
+}
