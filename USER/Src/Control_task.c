@@ -47,7 +47,7 @@ extern I2C_HandleTypeDef hi2c2;
  *   外环 PD   20ms
  *   按键/UI   20ms
  */
-#define CTRL_LOOP_PERIOD_MS     5U
+#define CTRL_LOOP_PERIOD_MS     20U   /* 暂时回退：5ms 循环与 OLED 异常相关，待查 */
 
 /* ------------------------------------------------------------------------- */
 /* 任务内部状态                                                                */
@@ -126,7 +126,6 @@ static void ControlTask_Main(void *argument)
     TickType_t last_wake;
     TickType_t last_outer;
     TickType_t last_gray;
-    TickType_t last_speed;
     TickType_t last_ui;
     uint32_t   fps_counter = 0U;
 
@@ -140,7 +139,6 @@ static void ControlTask_Main(void *argument)
     last_wake  = xTaskGetTickCount();
     last_outer = last_wake;
     last_gray  = last_wake;
-    last_speed = last_wake;
     last_ui    = last_wake;
 
     for (;;)
@@ -261,20 +259,8 @@ static void ControlTask_Main(void *argument)
              * （以前外环里直接调 Speed_PID_Update，导致速度环也被
              *   拖到 10Hz，轮子跟不上目标，循迹只要有一点弯就跟不住。）
              */
-            /*
-             * 内环门控到 20ms：主循环现在是 5ms，
-             * 速度环仍然要保持 20ms —— 编码器速度分辨率
-             * （1 计数 = 0.56cm/s @20ms）决定了更快没有意义，
-             * 反而让微分项更噪。
-             */
-            now = xTaskGetTickCount();
-            if ((now - last_speed) >= pdMS_TO_TICKS(SPEED_PID_PERIOD_MS))
-            {
-                last_speed = now;
-
-                (void)Speed_PID_Update(MOTOR_A, g_line_pd.left_target);
-                (void)Speed_PID_Update(MOTOR_B, g_line_pd.right_target);
-            }
+            (void)Speed_PID_Update(MOTOR_A, g_line_pd.left_target);
+            (void)Speed_PID_Update(MOTOR_B, g_line_pd.right_target);
 
             /*
              * 自动停车：外环判定"测试点已到启停线"后，
@@ -340,14 +326,8 @@ static void ControlTask_Main(void *argument)
                     /* 已在目标值，无需调整 */
                 }
 
-                now = xTaskGetTickCount();
-                if ((now - last_speed) >= pdMS_TO_TICKS(SPEED_PID_PERIOD_MS))
-                {
-                    last_speed = now;
-
-                    (void)Speed_PID_Update(MOTOR_A, s_ramped_target);
-                    (void)Speed_PID_Update(MOTOR_B, s_ramped_target);
-                }
+                (void)Speed_PID_Update(MOTOR_A, s_ramped_target);
+                (void)Speed_PID_Update(MOTOR_B, s_ramped_target);
             }
             break;
 
