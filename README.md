@@ -10,8 +10,10 @@
 | [1. 硬件构成](#1-硬件构成) | [2. 软件架构](#2-软件架构) | [3. 引脚映射](#3-引脚映射) |
 | [4. 编译与烧录](#4-编译与烧录) | [5. 调试与标定流程](#5-调试与标定流程务必按顺序) | [6. N20 实测标定](#6-n20-实测标定结果6-v-额定--74-v-电池--自带编码器) |
 | [7. 已知问题 / TODO](#7-已知问题--todo) | [8. 目录速查](#8-目录速查) | [分支说明](#分支说明) |
+| [许可证](#许可证) | | |
 
 [![build](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml/badge.svg)](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ---
 
@@ -768,3 +770,13 @@ linefllowing_car.ioc   CubeMX 工程（改外设从这里进）
 
 固件版本看 `[VER]` 行：`... 2025-10-30dn P1` → 构建 `dn`、当前档位 `P1`。
 发版走 tag（`v*`），CI 会自动编译并把 hex/bin/elf 挂到 Release。
+
+---
+
+## 许可证
+
+[MIT](LICENSE) © 2026 LUgABeEEE
+
+第三方代码归属：`Drivers/STM32F1xx_HAL_Driver/` 与 `Drivers/CMSIS/` 为 STMicroelectronics /
+Arm 提供，`FreeRTOS/` 为 Amazon Web Services 提供，各自保留原有许可证（见对应目录内的
+LICENSE / 文件头）。
