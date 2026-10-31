@@ -7,6 +7,7 @@
 > （新增 MPU6050、JDY-31、一圈自动停车、三档速度规划，构建标记 `dn`）。
 
 [![build](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml/badge.svg)](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ---
 
@@ -455,3 +456,12 @@ linefllowing_car.ioc   CubeMX 工程（改外设从这里进）
 ```
 
 > 注：工程名与目录沿用 CubeMX 生成时的 `linefllowing` 拼写，重命名会牵动 CMake、启动文件与 `.ioc`，比赛前不建议动。
+
+---
+
+## 许可证
+
+[MIT](LICENSE) © 2026 LUgABeEEE
+
+第三方代码归属：`Drivers/STM32F1xx_HAL_Driver/` 与 `Drivers/CMSIS/` 为 STMicroelectronics /
+Arm 提供，`FreeRTOS/` 为 Amazon Web Services 提供，各自保留原有许可证。
