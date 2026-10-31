@@ -1,7 +1,15 @@
 # DK 循迹小车
 
-> 面向「电子科技协会 · 校庆智能小车竞速赛」的循迹小车工程
-> STM32F103C8T6 + FreeRTOS + TB6612 + 8 路灰度，串级双环（循迹 PD + 编码器速度 PID）
+> 一台自己搭的循迹小车：STM32F103C8T6 + FreeRTOS + TB6612 + 8 路灰度，
+> 串级双环（循迹 PD 外环 + 编码器速度 PID 内环），能跑弧线、直角、锐角，支持一圈自动停车。
+
+**目录**
+
+| | | |
+|---|---|---|
+| [1. 硬件构成](#1-硬件构成) | [2. 软件架构](#2-软件架构) | [3. 引脚映射](#3-引脚映射) |
+| [4. 编译与烧录](#4-编译与烧录) | [5. 调试与标定流程](#5-调试与标定流程务必按顺序) | [6. N20 实测标定](#6-n20-实测标定结果6-v-额定--74-v-电池--自带编码器) |
+| [7. 已知问题 / TODO](#7-已知问题--todo) | [8. 目录速查](#8-目录速查) | [分支说明](#分支说明) |
 
 [![build](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml/badge.svg)](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml)
 
@@ -200,7 +208,7 @@ STM32CubeCLT 用户可临时 `export PATH=$HOME/st/stm32cubeclt_1.21.0/bin:$PATH
 cmake --preset Release
 cmake --build --preset Release
 # 产物：build/Release/linefllowing_car.elf —— 用 ST-Link / DAP-Link 经 SWD 烧录
-# 实测占用：FLASH 43 736 B (66.7 %)、RAM 17 344 B (84.7 %)
+# v1.2.x Release 实测：FLASH ≈ 54.5 KB (83 %)、RAM ≈ 16 KB (78 %) —— 余量已不足 10 KB
 ```
 
 **需要单步调试时用 Debug**：
@@ -208,7 +216,7 @@ cmake --build --preset Release
 ```bash
 cmake --preset Debug
 cmake --build --preset Debug
-# 实测占用：FLASH 49 368 B (75.3 %)、RAM 17 360 B (84.8 %)
+# Debug 比 Release 略大，Flash 余量更紧；接近上限时优先用 Release
 ```
 
 > ⚠️ Debug 的优化级别已从 CubeMX 默认的 `-O0` 改为 `-Og`（见 `cmake/gcc-arm-none-eabi.cmake`）。
@@ -745,3 +753,18 @@ linefllowing_car.ioc   CubeMX 工程（改外设从这里进）
 ```
 
 > 注：工程名与目录沿用 CubeMX 生成时的 `linefllowing` 拼写，重命名会牵动 CMake、启动文件与 `.ioc`，比赛前不建议动。
+
+---
+
+## 分支说明
+
+| 分支 | 定位 | 固件构建标记 |
+|---|---|---|
+| `main` | 早期主线：锐角承诺转向 140°、Kp=20、基础速度 30 cm/s，无 IMU | `s` |
+| `simple` | 当前主力：锐角 95°、Kp=12、基础速度 50 cm/s，新增 MPU6050、<br>JDY-31、一圈自动停、三档速度 profile | `dn` |
+
+`simple` 从 `main` 长出来，包含 `main` 的全部提交；`main` 停在 2026-10-26。
+两个分支的锐角取舍（140° / 95°）是不同赛道性格的选择，不是单纯的新旧。
+
+固件版本看 `[VER]` 行：`... 2025-10-30dn P1` → 构建 `dn`、当前档位 `P1`。
+发版走 tag（`v*`），CI 会自动编译并把 hex/bin/elf 挂到 Release。
