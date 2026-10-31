@@ -1,7 +1,10 @@
 # DK 循迹小车
 
-> 面向「电子科技协会 · 校庆智能小车竞速赛」的循迹小车工程
-> STM32F103C8T6 + FreeRTOS + TB6612 + 8 路灰度，串级双环（循迹 PD + 编码器速度 PID）
+> 一台自己搭的循迹小车：STM32F103C8T6 + FreeRTOS + TB6612 + 8 路灰度，
+> 串级双环（循迹 PD 外环 + 编码器速度 PID 内环）。
+
+> **本分支（`main`）是早期版本。当前主力开发在 [`simple` 分支](https://github.com/LUgABeEEE/DK-Line-following-car/tree/simple)**
+> （新增 MPU6050、JDY-31、一圈自动停车、三档速度规划，构建标记 `dn`）。
 
 [![build](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml/badge.svg)](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml)
 
