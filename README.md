@@ -10,10 +10,12 @@
 | [1. 硬件构成](#1-硬件构成) | [2. 软件架构](#2-软件架构) | [3. 引脚映射](#3-引脚映射) |
 | [4. 编译与烧录](#4-编译与烧录) | [5. 调试与标定流程](#5-调试与标定流程务必按顺序) | [6. N20 实测标定](#6-n20-实测标定结果6-v-额定--74-v-电池--自带编码器) |
 | [7. 已知问题 / TODO](#7-已知问题--todo) | [8. 目录速查](#8-目录速查) | [分支说明](#分支说明) |
-| [许可证](#许可证) | | |
+| [许可证](#许可证) | [**上手指南**](docs/上手.md) | |
 
 [![build](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml/badge.svg)](https://github.com/LUgABeEEE/DK-Line-following-car/actions/workflows/build.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+> 🔧 **第一次上手？** 直接看 [**上手指南**](docs/上手.md) —— 装工具链、编译、烧录、连串口认版本、三步自检、跑一圈，30 分钟走完。
 
 ---
 
