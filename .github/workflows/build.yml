@@ -35,7 +35,7 @@ jobs:
         preset: [Debug, Release]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装 ARM 工具链
         run: |
@@ -84,7 +84,7 @@ jobs:
     name: tools (python syntax)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -113,7 +113,7 @@ jobs:
       contents: write # 创建 Release / 上传附件需要写权限
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # 生成变更列表要用完整历史和 tag
 
